@@ -1,0 +1,5 @@
+.git
+examples/**/out
+tests/.playwright
+tests/node_modules
+**/zarf-package-*.tar.zst

@@ -34,6 +34,8 @@ go.work.sum
 
 # Test data outputs
 examples/**/out/
+tests/node_modules/
+tests/.playwright/
 
 # Any zarf packages
 **/zarf-package-*.tar.zst

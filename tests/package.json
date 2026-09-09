@@ -1,0 +1,11 @@
+{
+  "name": "compose-bridge-uds-smoke-tests",
+  "private": true,
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  }
+}

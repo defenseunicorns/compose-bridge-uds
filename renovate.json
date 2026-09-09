@@ -32,6 +32,16 @@
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Update uds-common smoke-test task imports",
+      "managerFilePatterns": ["/^tasks\\.yaml$/"],
+      "matchStrings": [
+        "https://raw\\.githubusercontent\\.com/(?<depName>defenseunicorns/uds-common)/(?<currentValue>v[^/]+)/tasks/(?:actions|create|deploy|setup)\\.yaml"
+      ],
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver-coerced"
     }
   ]
 }

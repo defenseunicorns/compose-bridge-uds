@@ -48,3 +48,15 @@ The transformation writes these artifacts to `out/`:
 - [Compose support](docs/compose-support.md) describes supported configuration, known limitations, development-service exclusions, and local Dockerfile builds.
 - [UDS package generation](docs/uds-package.md) describes generated resources, `x-uds` extensions, secrets, and policy exemptions.
 - [`examples/full/compose.yaml`](examples/full/compose.yaml) demonstrates the complete supported configuration.
+
+## Smoke test
+
+The end-to-end smoke test builds this repository as a Compose Bridge transformation, converts `examples/simple/compose.yaml`, creates and deploys the generated Zarf package on UDS Core Slim in k3d, and runs a Playwright journey through UDS SSO and WordPress installation.
+
+With Docker Compose, k3d, and the UDS CLI installed, run:
+
+```sh
+uds run test-install
+```
+
+The task uses the standard `uds-common` package creation, deployment, Core Slim setup, and Keycloak test-user tasks before running the Playwright journey.

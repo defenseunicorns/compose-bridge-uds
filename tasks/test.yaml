@@ -1,0 +1,84 @@
+# Copyright 2024-2026 Defense Unicorns
+# SPDX-License-Identifier: Apache-2.0
+# yaml-language-server: $schema=https://raw.githubusercontent.com/defenseunicorns/uds-cli/refs/heads/main/tasks.schema.json
+
+tasks:
+  - name: generate
+    description: Generate the simple example package
+    actions:
+      - description: Build the Compose Bridge transformation
+        cmd: docker build --tag compose-bridge-uds:smoke-test .
+
+      - description: Convert the simple Compose application
+        cmd: |
+          docker compose bridge convert \
+            --transformation compose-bridge-uds:smoke-test \
+            --output out
+        dir: examples/simple
+
+  - name: all
+    actions:
+      - task: health-check
+      - task: ingress
+      - task: ui
+
+  - name: health-check
+    description: Ensure the generated package becomes available
+    actions:
+      - description: MySQL health check
+        maxTotalSeconds: 600
+        wait:
+          cluster:
+            kind: Deployment
+            name: db
+            namespace: wordpress
+            condition: Available
+
+      - description: WordPress health check
+        maxTotalSeconds: 600
+        wait:
+          cluster:
+            kind: Deployment
+            name: wordpress
+            namespace: wordpress
+            condition: Available
+
+  - name: ingress
+    actions:
+      - description: WordPress ingress status check
+        maxRetries: 30
+        cmd: |
+          STATUS=$(curl -L -o /dev/null -s -w "%{http_code}" \
+            https://wordpress.uds.dev)
+          echo "WordPress system status: ${STATUS}"
+          if [ "${STATUS}" != "200" ]; then
+            sleep 10
+            exit 1
+          fi
+
+  - name: ui
+    description: WordPress UI checks
+    actions:
+      - cmd: |
+          PLAYWRIGHT_VERSION=$(sed -nE \
+            's/.*"@playwright\/test": "([^"]+)".*/\1/p' package.json)
+          if [ -z "${PLAYWRIGHT_VERSION}" ]; then
+            echo "Unable to determine the Playwright version." >&2
+            exit 1
+          fi
+
+          docker run --rm \
+            --init \
+            --network host \
+            --shm-size 1g \
+            --security-opt seccomp=unconfined \
+            --user "$(id -u):$(id -g)" \
+            --env BASE_URL=https://wordpress.uds.dev \
+            --env CI=true \
+            --env HOME=/tmp \
+            --env NPM_CONFIG_CACHE=/tmp/.npm \
+            --volume "$(pwd):/app" \
+            --workdir /app \
+            "mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}" \
+            bash -lc "npm ci && npx playwright test"
+        dir: tests
