@@ -26,7 +26,10 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 FROM scratch
 
-LABEL com.docker.compose.bridge=transformation
+LABEL com.docker.compose.bridge=transformation \
+      org.opencontainers.image.source="https://github.com/defenseunicorns-labs/compose-bridge-uds" \
+      org.opencontainers.image.description="Transform Docker Compose applications into deployable UDS packages." \
+      org.opencontainers.image.licenses="Apache-2.0"
 
 COPY --from=builder \
      --chown=65532:65532 \
