@@ -3,9 +3,36 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/defenseunicorns/uds-cli/refs/heads/main/tasks.schema.json
 
 includes:
+  - test: ./tasks/test.yaml
   - actions: https://raw.githubusercontent.com/defenseunicorns/uds-common/v1.28.1/tasks/actions.yaml
   - create: https://raw.githubusercontent.com/defenseunicorns/uds-common/v1.28.1/tasks/create.yaml
   - deploy: https://raw.githubusercontent.com/defenseunicorns/uds-common/v1.28.1/tasks/deploy.yaml
   - setup: https://raw.githubusercontent.com/defenseunicorns/uds-common/v1.28.1/tasks/setup.yaml
 
-tasks: []
+tasks:
+  - name: test-install
+    description: Generate and test the simple example package on UDS Core
+    actions:
+      - task: test:generate
+
+      - task: create:package
+        with:
+          path: examples/simple/out
+          options: "--output examples/simple/out --skip-sbom --no-color"
+
+      - task: setup:k3d-test-cluster
+
+      - description: Read the database password
+        cmd: tr -d '\r\n' < examples/simple/db_password.txt
+        mute: true
+        setVariables:
+          - name: DB_PASSWORD
+
+      - task: deploy:package
+        with:
+          path: examples/simple/out
+          flavor: upstream
+          options: "--set-variables DB_PASSWORD=${DB_PASSWORD} --no-color"
+
+      - task: setup:keycloak-user
+      - task: test:all

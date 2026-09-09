@@ -63,7 +63,7 @@ jobs:
         run: uds run --no-progress actions:install-deps
 
       - name: Run simple example smoke test
-        run: ./scripts/smoke-test.sh
+        run: uds run --no-progress test-install
 
       - name: Print cluster diagnostics
         if: failure()

@@ -56,7 +56,7 @@ The end-to-end smoke test builds this repository as a Compose Bridge transformat
 With Docker Compose, k3d, and the UDS CLI installed, run:
 
 ```sh
-./scripts/smoke-test.sh
+uds run test-install
 ```
 
-The script uses the standard `uds-common` package creation, deployment, Core Slim setup, and Keycloak test-user tasks before running the Playwright journey.
+The task uses the standard `uds-common` package creation, deployment, Core Slim setup, and Keycloak test-user tasks before running the Playwright journey.
