@@ -11,6 +11,8 @@
 | `configs:`                                                       | Delivered as read-only files. Inline `content:` becomes a reloadable package-owned ConfigMap. Native external configs reference deployment-provided Kubernetes ConfigMap names and keys.                                                                                        |
 | `environment:`, `env_file:`                                      | Resolved by `docker compose config`, exposed as non-sensitive Zarf variables, and rendered into a reloadable ConfigMap consumed by the service through `envFrom`.                                                                                                               |
 | `depends_on:`                                                    | Required dependencies become init-container wait logic using `netcat` (busybox). A service referenced only through long-syntax dependencies with `required: false` is excluded as a development-only service. Included dependencies must declare a port.                                                                                       |
+| `pre_start:`                                                    | Converted to Kubernetes init containers after dependency-wait init containers. Hooks inherit the service image, mounts, environment, user, and working directory unless overridden. Only `per_replica: true` is supported because Kubernetes init containers run once per Pod. |
+| `working_dir:`                                                  | Maps to the Kubernetes container `workingDir` field and is inherited by `pre_start` hooks that do not set their own working directory. |
 | `healthcheck:`                                                   | `CMD` and `CMD-SHELL` forms convert to Kubernetes liveness probes.                                                                                                                                                                                                              |
 | `container_name:`                                                | Ignored with a warning. Kubernetes Service and Deployment names come from the Compose service name.                                                                                                                                                                             |
 | `stdin_open:`                                                    | Maps to the Kubernetes container `stdin` field.                                                                                                                                                                                                                                 |
@@ -74,7 +76,7 @@ Secret. Build secrets are unaffected by this runtime-secret behavior.
 
 ## Runtime configuration
 
-Compose configs with inline `content:` become package-owned ConfigMaps. A native
+Compose configs with inline `content:` become reloadable package-owned ConfigMaps. Each inline config also becomes a non-sensitive, auto-indented Zarf variable named from the normalized config name (for example, `app-config` becomes `APP_CONFIG`), with the Compose content as its default. This permits multiline content to be replaced at deployment time without regenerating the chart. A native
 Compose `external: true` config is not created by the generated chart. Instead,
 the package declares non-sensitive `<CONFIG>_CONFIGMAP_NAME` and
 `<CONFIG>_CONFIGMAP_KEY` Zarf variables. The ConfigMap name variable defaults to
@@ -89,9 +91,11 @@ label; otherwise perform a rollout after changing it.
 
 Every resolved service environment value becomes a non-sensitive Zarf variable named `<SERVICE>_<ENVIRONMENT_VARIABLE>`. The value resolved by `docker compose config`, including an empty value, is retained as its deployment default in `zarf.yaml`.
 
+Every service also gets a non-sensitive, auto-indented `<SERVICE>_ENV_FROM_SECRETS` Zarf variable whose default is `[]`. Set it to a YAML array of Kubernetes Secret names that already exist in the release namespace, for example Secrets reconciled by External Secrets Operator. The generated Deployment attaches each named Secret through `envFrom.secretRef`; it does not create or populate those Secrets. Secret references are emitted before the service environment ConfigMap, so explicit Compose environment values take precedence when keys overlap. The same references are inherited by supported `pre_start` init containers. Secret names are validated during Helm rendering.
+
 The bridge renders one `<service>-environment` ConfigMap for each service with environment values and attaches it to that service through `envFrom`. Empty environment ConfigMaps are omitted. Package-owned environment and Compose configuration ConfigMaps carry the `uds.dev/pod-reload: "true"` label so UDS can restart dependent Pods when their data changes. The bridge cannot add that label to external ConfigMaps. Direct Helm deployments do not provide UDS reload behavior.
 
-ConfigMaps do not protect sensitive data; use Compose `secrets:` for credentials and other confidential values. Environment names must use the Kubernetes-compatible `[-._a-zA-Z][-._a-zA-Z0-9]*` form; dots and hyphens are supported. Generated Zarf variable names must also be unique across all services, configs, secrets, and automatic package variables such as resource settings, `DOMAIN`, and `ADDITIONAL_NETWORK_ALLOW`; conversion fails rather than emitting an ambiguous package when names collide.
+ConfigMaps do not protect sensitive data; use Compose `secrets:` for credentials and other confidential values. Environment names must use the Kubernetes-compatible `[-._a-zA-Z][-._a-zA-Z0-9]*` form; dots and hyphens are supported. Generated Zarf variable names must also be unique across all services, configs, secrets, and automatic package variables such as resource settings, `APPLICATION_NAME`, `DOMAIN`, and `ADDITIONAL_NETWORK_ALLOW`; conversion fails rather than emitting an ambiguous package when names collide.
 
 ## Deployment resources
 
@@ -99,9 +103,9 @@ Every generated service exposes four non-sensitive, non-prompting Zarf variables
 
 The four quantities are independent. A deployment can override one without restating the others. Empty quantities are omitted from the rendered Deployment; if all four are empty, the container has no `resources` field. CPU and memory values are rendered as quoted Kubernetes quantity strings.
 
-## Package domain
+## Public application identity and domain
 
-Every generated package exposes the non-sensitive Zarf variable `DOMAIN`, defaulting to `uds.dev`. The value is available to the generated Helm chart as `uds.domain` and configures domain-aware endpoints inferred by the bridge, including inferred SSO redirect URIs. An `x-uds.spec.sso` redirect URI supplied by the Compose author remains literal, including any Helm expression it contains.
+Every generated package exposes `APPLICATION_NAME`, defaulting to the generated package name, and `DOMAIN`, defaulting to `uds.dev`. Both are non-sensitive Zarf variables. `APPLICATION_NAME` must be a DNS-1123 label and controls the first inferred public hostname plus inferred SSO display name, client ID, and redirect host. The domain value is available to the generated Helm chart as `uds.domain` and configures domain-aware endpoints inferred by the bridge, including the inferred Authservice redirect URI `https://<APPLICATION_NAME>.<DOMAIN>/auth/callback`. An `x-uds.spec.sso` redirect URI supplied by the Compose author remains literal, including any Helm expression it contains.
 
 `DOMAIN` is package configuration, not container configuration. The bridge does not inject it into application containers or give special meaning to a Compose environment variable named `DOMAIN`. Applications that need their public origin must continue to declare the setting expected by the image, such as `PUBLIC_URL`, `ROOT_URL`, or `APP_ORIGIN`, in Compose.
 

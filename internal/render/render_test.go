@@ -1272,8 +1272,8 @@ networks:
 			if got := rule["direction"]; got != direction {
 				t.Fatalf("expected %s direction %s, got %#v", description, direction, got)
 			}
-			if got := rule["remoteNamespace"]; got != "demo" {
-				t.Fatalf("expected %s to stay in package namespace, got %#v", description, got)
+			if got := rule["remoteNamespace"]; got != "{{ .Release.Namespace }}" {
+				t.Fatalf("expected %s to use the Helm release namespace, got %#v", description, got)
 			}
 			if got := mustMap(t, rule["selector"])[labelKey]; got != "true" {
 				t.Fatalf("expected %s local selector, got %#v", description, rule["selector"])
@@ -1476,7 +1476,7 @@ secrets:
 
 	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
 	for _, want := range []string{
-		"uds:\n    domain: \"###ZARF_VAR_DOMAIN###\"",
+		"uds:\n    applicationName: \"###ZARF_VAR_APPLICATION_NAME###\"\n    domain: \"###ZARF_VAR_DOMAIN###\"",
 		"###ZARF_VAR_WORKER_DOMAIN###",
 		"###ZARF_VAR_API_KEY###",
 		"###ZARF_VAR_ADDITIONAL_NETWORK_ALLOW###",
@@ -1555,7 +1555,7 @@ configs:
 	}
 
 	configMap := readFile(t, filepath.Join(outDir, "chart", "templates", "configmap-app-config.yaml"))
-	for _, want := range []string{"key: value", `uds.dev/pod-reload: "true"`} {
+	for _, want := range []string{`{{ index .Values.configs "APP_CONFIG" | nindent 8 }}`, `uds.dev/pod-reload: "true"`} {
 		if !strings.Contains(configMap, want) {
 			t.Fatalf("expected configmap to contain %q\n%s", want, configMap)
 		}
@@ -1563,7 +1563,7 @@ configs:
 
 	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
-		"namespace: demo",
+		"namespace: '{{ .Release.Namespace }}'",
 		"service: api",
 		"host: app",
 		"port: 8080",
@@ -2034,7 +2034,7 @@ services:
 	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
 		"service: web",
-		"host: web",
+		"host: '{{ include \"composeBridge.applicationName\" . }}'",
 		"gateway: tenant",
 		"port: 8080",
 		"app.kubernetes.io/name: web",
@@ -2070,9 +2070,9 @@ services:
 
 	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
-		"clientId: uds-compose-myapp",
-		"name: Myapp Login",
-		"https://web.{{ .Values.uds.domain }}/*",
+		"clientId: uds-compose-{{ include \"composeBridge.applicationName\" . }}",
+		"name: '{{ include \"composeBridge.applicationName\" . | replace \"-\" \" \" | title }} Login'",
+		"https://{{ include \"composeBridge.applicationName\" . }}.{{ .Values.uds.domain }}/auth/callback",
 		"enableAuthserviceSelector",
 		"app.kubernetes.io/name: web",
 	} {
@@ -2160,10 +2160,10 @@ services:
 	if !strings.Contains(udsPackage, "clientId: custom-id") {
 		t.Fatalf("expected user-provided clientId to be preserved\n%s", udsPackage)
 	}
-	if !strings.Contains(udsPackage, "name: Myapp Login") {
+	if !strings.Contains(udsPackage, "name: '{{ include \"composeBridge.applicationName\" . | replace \"-\" \" \" | title }} Login'") {
 		t.Fatalf("expected inferred name\n%s", udsPackage)
 	}
-	if !strings.Contains(udsPackage, "https://web.{{ .Values.uds.domain }}/*") {
+	if !strings.Contains(udsPackage, "https://{{ include \"composeBridge.applicationName\" . }}.{{ .Values.uds.domain }}/auth/callback") {
 		t.Fatalf("expected inferred redirectUris\n%s", udsPackage)
 	}
 }
@@ -2195,8 +2195,8 @@ services:
 
 	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
-		"clientId: uds-compose-mattermost",
-		"name: Mattermost Login",
+		"clientId: uds-compose-{{ include \"composeBridge.applicationName\" . }}",
+		"name: '{{ include \"composeBridge.applicationName\" . | replace \"-\" \" \" | title }} Login'",
 	} {
 		if !strings.Contains(udsPackage, want) {
 			t.Fatalf("expected UDS SSO configuration to contain %q\n%s", want, udsPackage)
@@ -2251,7 +2251,7 @@ services:
 		}
 		previous = index
 	}
-	if strings.Contains(udsPackage, "https://web.{{ .Values.uds.domain }}/*") {
+	if strings.Contains(udsPackage, "https://{{ include \"composeBridge.applicationName\" . }}.{{ .Values.uds.domain }}/auth/callback") {
 		t.Fatalf("did not expect inferred redirect URI when redirectUris is supplied\n%s", udsPackage)
 	}
 }
@@ -3114,7 +3114,7 @@ services:
 	}
 
 	// Resources are rendered as chart templates, not raw manifests.
-	for _, rel := range []string{"namespace.yaml", "deployment-api.yaml", "service-api.yaml", "uds-package.yaml"} {
+	for _, rel := range []string{"deployment-api.yaml", "service-api.yaml", "uds-package.yaml"} {
 		if _, err := os.Stat(filepath.Join(outDir, "chart", "templates", rel)); err != nil {
 			t.Fatalf("expected chart template %s: %v", rel, err)
 		}
@@ -3279,7 +3279,9 @@ func TestDeploymentResourceTemplateAppliesOverridesAndOmitsEmptyMaps(t *testing.
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpl, err := template.New("deployment").Funcs(template.FuncMap{
-				"dict": func(...any) map[string]any { return map[string]any{} },
+				"dict":    func(...any) map[string]any { return map[string]any{} },
+				"list":    func(values ...any) []any { return values },
+				"include": func(string, any) string { return "secret-name" },
 				"default": func(fallback, value any) any {
 					if value == nil || value == "" {
 						return fallback
@@ -4124,8 +4126,30 @@ services:
 	if strings.Contains(deployment, "POSTGRES_HOST") {
 		t.Fatalf("did not expect literal environment entries on the deployment\n%s", deployment)
 	}
+	for _, want := range []string{
+		`range $secretName := ((index (.Values.environmentSecrets | default (dict)) "api") | default (list))`,
+		`name: '{{ include "composeBridge.externalResourceNameValue" (list "API_ENV_FROM_SECRETS entries must be valid Kubernetes Secret names" $secretName) }}'`,
+	} {
+		if !strings.Contains(deployment, want) {
+			t.Fatalf("expected deployment environment Secret template to contain %q\n%s", want, deployment)
+		}
+	}
+	if strings.Index(deployment, "secretRef:") >= strings.Index(deployment, "configMapRef:") {
+		t.Fatalf("expected Secret envFrom references before the Compose environment ConfigMap so explicit environment values win\n%s", deployment)
+	}
+	uiDeployment := readFile(t, filepath.Join(templatesDir, "deployment-ui.yaml"))
+	if !strings.Contains(uiDeployment, `.Values.environmentSecrets`) || strings.Contains(uiDeployment, "configMapRef:") {
+		t.Fatalf("expected service without Compose environment to retain only dynamic Secret envFrom support\n%s", uiDeployment)
+	}
 
 	chartValues := readYAMLMap(t, filepath.Join(outDir, "chart", "values.yaml"))
+	environmentSecrets := mustMap(t, chartValues["environmentSecrets"])
+	for _, serviceName := range []string{"api", "ui", "worker"} {
+		secretNames, ok := environmentSecrets[serviceName].([]any)
+		if !ok || len(secretNames) != 0 {
+			t.Fatalf("expected empty environment Secret list for %s, got %#v", serviceName, environmentSecrets[serviceName])
+		}
+	}
 	apiValues := mustMap(t, mustMap(t, chartValues["environment"])["api"])
 	if got := apiValues["POSTGRES_HOST"]; got != "db" {
 		t.Fatalf("expected Compose host default, got %#v", got)
@@ -4144,6 +4168,9 @@ services:
 		"###ZARF_VAR_API_POSTGRES_PORT###",
 		"###ZARF_VAR_API_POSTGRES_PASSWORD_FILE###",
 		"###ZARF_VAR_WORKER_LOG_LEVEL###",
+		"###ZARF_VAR_API_ENV_FROM_SECRETS###",
+		"###ZARF_VAR_UI_ENV_FROM_SECRETS###",
+		"###ZARF_VAR_WORKER_ENV_FROM_SECRETS###",
 	} {
 		if !strings.Contains(zarfValues, want) {
 			t.Fatalf("expected Zarf values to contain %q\n%s", want, zarfValues)
@@ -4161,6 +4188,11 @@ services:
 		"name: API_POSTGRES_PASSWORD_FILE",
 		"default: /run/secrets/postgres-password",
 		"name: WORKER_LOG_LEVEL",
+		"name: API_ENV_FROM_SECRETS",
+		"name: UI_ENV_FROM_SECRETS",
+		"name: WORKER_ENV_FROM_SECRETS",
+		"default: '[]'",
+		"autoIndent: true",
 		"valuesFiles:",
 	} {
 		if !strings.Contains(zarfConfig, want) {
@@ -4598,6 +4630,87 @@ func findYAMLDocumentByKind(t *testing.T, content []byte, kind string) map[strin
 	}
 	t.Fatalf("rendered YAML did not contain kind %s\n%s", kind, content)
 	return nil
+}
+
+func TestWritePackageMapsPreStartAndInlineConfig(t *testing.T) {
+	t.Parallel()
+	input := []byte(`name: demo
+services:
+  database:
+    image: postgres:18
+    expose:
+      - "5432"
+  app:
+    image: example/app:1.0.0
+    working_dir: /work
+    environment:
+      BASE: service
+    depends_on:
+      database:
+        condition: service_started
+    pre_start:
+      - command: [sh, -c, "echo init"]
+        environment:
+          HOOK: value
+        per_replica: true
+    configs:
+      - source: app_config
+        target: /input/config.yaml
+configs:
+  app_config:
+    content: |
+      key: value
+`)
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-app.yaml"))
+	waitIndex := strings.Index(deployment, "name: wait-database")
+	hookIndex := strings.Index(deployment, "name: pre-start-1")
+	mainIndex := strings.Index(deployment, "            containers:")
+	if waitIndex < 0 || hookIndex < waitIndex || mainIndex < hookIndex {
+		t.Fatalf("expected dependency wait, pre-start hook, then main container\n%s", deployment)
+	}
+	for _, want := range []string{"workingDir: /work", "name: HOOK", "value: value", "mountPath: /input/config.yaml"} {
+		if !strings.Contains(deployment, want) {
+			t.Fatalf("expected deployment to contain %q\n%s", want, deployment)
+		}
+	}
+	if got := strings.Count(deployment, `.Values.environmentSecrets`); got != 2 {
+		t.Fatalf("expected environment Secret references on pre-start and main containers, got %d\n%s", got, deployment)
+	}
+	configMap := readFile(t, filepath.Join(outDir, "chart", "templates", "configmap-app-config.yaml"))
+	if !strings.Contains(configMap, `{{ index .Values.configs "APP_CONFIG" | nindent 8 }}`) {
+		t.Fatalf("expected deploy-time config value\n%s", configMap)
+	}
+	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
+	for _, want := range []string{"name: APPLICATION_NAME", "name: APP_CONFIG", "autoIndent: true"} {
+		if !strings.Contains(zarfConfig, want) {
+			t.Fatalf("expected zarf config to contain %q\n%s", want, zarfConfig)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "chart", "templates", "namespace.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("generated chart must not own a Namespace")
+	}
+}
+
+func TestPreStartRequiresPerReplica(t *testing.T) {
+	t.Parallel()
+	_, err := compose.LoadCanonicalYAML([]byte(`name: demo
+services:
+  app:
+    image: example/app:1.0.0
+    pre_start:
+      - command: [sh, -c, "echo init"]
+`))
+	if err == nil || !strings.Contains(err.Error(), "per_replica: true") {
+		t.Fatalf("expected actionable per_replica error, got %v", err)
+	}
 }
 
 func readFile(t *testing.T, path string) string {

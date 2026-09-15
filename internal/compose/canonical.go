@@ -254,7 +254,6 @@ func loadWorkingDir(sourcePath string) string {
 	}
 	return wd
 }
-
 func loadProject(project types.Project, raw map[string]any, excludedServices map[string]struct{}) (model.App, error) {
 	if len(project.Services) == 0 {
 		return model.App{}, fmt.Errorf("canonical compose model has no services")
@@ -319,12 +318,14 @@ func loadProject(project types.Project, raw map[string]any, excludedServices map
 
 	services := make([]model.Service, 0, len(keys))
 	buildSecrets := map[string]any{}
+	rawServiceConfigs, _ := asMap(raw["services"])
 
 	for _, key := range keys {
 		if _, excluded := excludedServices[key]; excluded {
 			continue
 		}
 		rawSvc := project.Services[key]
+		rawService, _ := asMap(rawServiceConfigs[key])
 		serviceName, _ := resolveAlias(serviceAliases, key)
 
 		ports, err := parsePorts(rawSvc.Ports, rawSvc.Expose)
@@ -380,6 +381,11 @@ func loadProject(project types.Project, raw map[string]any, excludedServices map
 			}
 		}
 
+		preStart, err := parsePreStartHooks(rawSvc.PreStart, rawService, image, rawSvc.User, rawSvc.WorkingDir)
+		if err != nil {
+			return model.App{}, fmt.Errorf("service %q pre_start: %w", key, err)
+		}
+
 		services = append(services, model.Service{
 			Name:         serviceName,
 			Image:        image,
@@ -396,11 +402,13 @@ func loadProject(project types.Project, raw map[string]any, excludedServices map
 			Args:         copyCommand(rawSvc.Command),
 			Stdin:        rawSvc.StdinOpen,
 			Hostname:     strings.TrimSpace(rawSvc.Hostname),
+			WorkingDir:   strings.TrimSpace(rawSvc.WorkingDir),
 			Healthcheck:  parseHealthcheck(rawSvc.HealthCheck),
 			Volumes:      volumeMounts,
 			Secrets:      secretRefs,
 			Configs:      configRefs,
 			DependsOn:    dependsOn,
+			PreStart:     preStart,
 			Resources:    parseResources(rawSvc.Deploy),
 			Profiles:     normalizeProfiles(rawSvc.Profiles),
 		})
@@ -429,6 +437,47 @@ func loadProject(project types.Project, raw map[string]any, excludedServices map
 		Configs:      configs,
 		BuildSecrets: buildSecrets,
 	}, nil
+}
+func parsePreStartHooks(raw []types.ServiceHook, rawService map[string]any, serviceImage, serviceUser, serviceWorkingDir string) ([]model.PreStartHook, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	rawHooks, _ := asSlice(rawService["pre_start"])
+	hooks := make([]model.PreStartHook, 0, len(raw))
+	for i, hook := range raw {
+		imageInherited := true
+		if i < len(rawHooks) {
+			if rawHook, ok := asMap(rawHooks[i]); ok {
+				_, explicitlySet := rawHook["image"]
+				imageInherited = !explicitlySet
+			}
+		}
+		image := strings.TrimSpace(hook.Image)
+		if imageInherited || image == "" {
+			image = serviceImage
+		}
+		if image == "" {
+			return nil, fmt.Errorf("hook %d has no image and the service image is empty", i)
+		}
+		user := strings.TrimSpace(hook.User)
+		workingDir := strings.TrimSpace(hook.WorkingDir)
+		if imageInherited && user == "" {
+			user = strings.TrimSpace(serviceUser)
+		}
+		if workingDir == "" {
+			workingDir = strings.TrimSpace(serviceWorkingDir)
+		}
+		hooks = append(hooks, model.PreStartHook{
+			Image:          image,
+			ImageInherited: imageInherited,
+			Command:        copyCommand(hook.Command),
+			User:           user,
+			Privileged:     hook.Privileged,
+			WorkingDir:     workingDir,
+			Env:            parseEnvironment(hook.Environment),
+		})
+	}
+	return hooks, nil
 }
 
 // collectExcludedSecretRefs records known Compose secrets consumed by services

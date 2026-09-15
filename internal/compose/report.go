@@ -24,10 +24,12 @@ var translatedServiceSettings = map[string]string{
 	"image":       "Zarf package image and Deployment container image",
 	"networks":    "UDS network policy selectors",
 	"ports":       "Kubernetes Service ports",
+	"pre_start":   "Deployment init containers",
 	"privileged":  "Deployment container security context and UDS exemption",
 	"secrets":     "Deployment secret volume mounts",
 	"stdin_open":  "Deployment container stdin setting",
 	"user":        "Deployment container security context",
+	"working_dir": "Deployment container working directory",
 }
 
 var supportedUDSMetadataKeys = map[string]struct{}{

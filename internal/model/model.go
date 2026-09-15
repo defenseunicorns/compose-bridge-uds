@@ -95,6 +95,16 @@ type Dependency struct {
 	Condition string
 }
 
+type PreStartHook struct {
+	Image          string
+	ImageInherited bool
+	Command        []string
+	User           string
+	Privileged     bool
+	WorkingDir     string
+	Env            []EnvVar
+}
+
 type Package struct {
 	Name                    string
 	Namespace               string
@@ -138,11 +148,13 @@ type Service struct {
 	Args         []string
 	Stdin        bool
 	Hostname     string
+	WorkingDir   string
 	Healthcheck  *Healthcheck
 	Volumes      []VolumeMount
 	Secrets      []FileRef
 	Configs      []FileRef
 	DependsOn    []Dependency
+	PreStart     []PreStartHook
 	Resources    Resources
 	Profiles     []string
 }

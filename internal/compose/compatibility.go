@@ -38,6 +38,7 @@ var supportedServiceKeys = map[string]struct{}{
 	"environment": {}, "env_file": {}, "expose": {}, "healthcheck": {}, "hostname": {},
 	"image": {}, "networks": {}, "ports": {}, "privileged": {}, "profiles": {}, "restart": {},
 	"secrets": {}, "security_opt": {}, "stdin_open": {}, "user": {}, "volumes": {},
+	"pre_start": {}, "working_dir": {},
 }
 
 var unsupportedServiceRemediation = map[string]string{
@@ -127,6 +128,17 @@ func validateCompatibility(project types.Project, raw map[string]any, excludedSe
 				Message:     fmt.Sprintf("dependency %q has no declared TCP service port for generated wait logic", dependencyName),
 				Remediation: fmt.Sprintf("declare a TCP port in ports or expose on service %q, or mark the dependency required: false", dependencyName),
 			})
+		}
+
+		for i, hook := range service.PreStart {
+			if !hook.PerReplica {
+				issues = append(issues, CompatibilityIssue{
+					Code:        "pre-start-per-replica",
+					Path:        fmt.Sprintf("%s.pre_start[%d].per_replica", path, i),
+					Message:     "Kubernetes init containers run once per Pod, but this hook requests once-per-service execution",
+					Remediation: "set `per_replica: true` or move once-per-service initialization outside the workload",
+				})
+			}
 		}
 
 		for key := range rawService {

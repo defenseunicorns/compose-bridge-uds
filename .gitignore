@@ -43,3 +43,5 @@ tests/.playwright/
 # Python build artifacts
 **/__pycache__/
 .DS_Store
+
+.workdir
