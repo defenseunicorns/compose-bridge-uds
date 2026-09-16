@@ -482,11 +482,11 @@ func completeConversionReport(report *model.ConversionReport, project types.Proj
 	})
 
 	if !app.Package.SSOConfigured {
-		_, primaryExposedService := inference.PrimaryExposedService(app)
-		if primaryExposedService != "" {
+		primaryExposure := inference.PrimaryExposure(app)
+		if primaryExposure.Service != "" {
 			report.Inferred = append(report.Inferred, model.ConversionDecision{
 				Path:    "x-uds.spec.sso",
-				Value:   primaryExposedService,
+				Value:   primaryExposure.Service,
 				Message: "Inferred default SSO client configuration from the service exposure.",
 			})
 		}

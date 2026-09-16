@@ -55,7 +55,6 @@ x-uds:
     network:
       expose:
         - service: server
-          host: hello-world
     monitor:
       - service: server
         description: Server metrics

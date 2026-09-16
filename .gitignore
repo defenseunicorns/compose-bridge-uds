@@ -43,3 +43,6 @@ tests/.playwright/
 # Python build artifacts
 **/__pycache__/
 .DS_Store
+
+# Temporary directory for agent generated temp files/scripts
+.workdir/

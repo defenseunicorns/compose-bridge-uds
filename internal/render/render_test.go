@@ -430,7 +430,7 @@ func TestLoadCanonicalRejectsUnexpectedTopLevelXUDSKeys(t *testing.T) {
 			config: "package:\n    name: legacy-name\n    namespace: legacy-namespace\n    group: legacy-group\n    version: 9.9.9",
 			want: []string{
 				"x-uds.package.name (use x-uds.metadata.name)",
-				"x-uds.package.namespace (namespace is derived from x-uds.metadata.name or the Compose project name)",
+				"x-uds.package.namespace (the default deployment namespace is derived from x-uds.metadata.name or the Compose project name)",
 				"x-uds.package.group (remove this field; generated SSO client IDs use the compose group)",
 				"x-uds.package.version (use x-uds.metadata.version)",
 			},
@@ -1272,8 +1272,8 @@ networks:
 			if got := rule["direction"]; got != direction {
 				t.Fatalf("expected %s direction %s, got %#v", description, direction, got)
 			}
-			if got := rule["remoteNamespace"]; got != "demo" {
-				t.Fatalf("expected %s to stay in package namespace, got %#v", description, got)
+			if got := rule["remoteNamespace"]; got != "{{ .Release.Namespace }}" {
+				t.Fatalf("expected %s to use the Helm release namespace, got %#v", description, got)
 			}
 			if got := mustMap(t, rule["selector"])[labelKey]; got != "true" {
 				t.Fatalf("expected %s local selector, got %#v", description, rule["selector"])
@@ -1563,9 +1563,10 @@ configs:
 
 	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
-		"namespace: demo",
+		"namespace: '{{ .Release.Namespace }}'",
 		"service: api",
 		"host: app",
+		"https://app.{{ .Values.uds.domain }}/*",
 		"port: 8080",
 		"gateway: tenant",
 	} {
@@ -1620,8 +1621,52 @@ services:
 	if !strings.Contains(udsPackage, "service: web") {
 		t.Fatalf("expected published web service to be auto-exposed")
 	}
+	if !strings.Contains(udsPackage, "host: '{{ .Release.Namespace }}'") {
+		t.Fatalf("expected first inferred host to use the Helm release namespace\n%s", udsPackage)
+	}
 	if strings.Contains(udsPackage, "service: db") {
 		t.Fatalf("did not expect internal-only db service to be auto-exposed")
+	}
+}
+
+func TestWritePackageUsesReleaseNamespaceOnlyForFirstInferredHost(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  web:
+    image: ghcr.io/acme/web:1.0.0
+    ports:
+      - target: 8080
+        published: "8080"
+  admin:
+    image: ghcr.io/acme/admin:1.0.0
+    ports:
+      - target: 9090
+        published: "9090"
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPackage := readUDSPackageYAMLMap(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+	network := mustMap(t, mustMap(t, udsPackage["spec"])["network"])
+	exposes := network["expose"].([]any)
+	if len(exposes) != 2 {
+		t.Fatalf("expose rules = %#v, want two", exposes)
+	}
+	if got := mustMap(t, exposes[0])["host"]; got != "{{ .Release.Namespace }}" {
+		t.Fatalf("first inferred host = %#v, want Helm release namespace", got)
+	}
+	additionalExpose := mustMap(t, exposes[1])
+	if got, want := additionalExpose["host"], additionalExpose["service"]; got != want {
+		t.Fatalf("additional inferred host = %#v, want service name %#v", got, want)
 	}
 }
 
@@ -2034,7 +2079,7 @@ services:
 	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
 		"service: web",
-		"host: web",
+		"host: '{{ .Release.Namespace }}'",
 		"gateway: tenant",
 		"port: 8080",
 		"app.kubernetes.io/name: web",
@@ -2070,9 +2115,9 @@ services:
 
 	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
-		"clientId: uds-compose-myapp",
+		"clientId: uds-compose-{{ .Release.Namespace }}",
 		"name: Myapp Login",
-		"https://web.{{ .Values.uds.domain }}/*",
+		"https://{{ .Release.Namespace }}.{{ .Values.uds.domain }}/*",
 		"enableAuthserviceSelector",
 		"app.kubernetes.io/name: web",
 	} {
@@ -2160,10 +2205,13 @@ services:
 	if !strings.Contains(udsPackage, "clientId: custom-id") {
 		t.Fatalf("expected user-provided clientId to be preserved\n%s", udsPackage)
 	}
+	if strings.Contains(udsPackage, "clientId: custom-id-") {
+		t.Fatalf("explicit clientId must not be namespace-qualified\n%s", udsPackage)
+	}
 	if !strings.Contains(udsPackage, "name: Myapp Login") {
 		t.Fatalf("expected inferred name\n%s", udsPackage)
 	}
-	if !strings.Contains(udsPackage, "https://web.{{ .Values.uds.domain }}/*") {
+	if !strings.Contains(udsPackage, "https://{{ .Release.Namespace }}.{{ .Values.uds.domain }}/*") {
 		t.Fatalf("expected inferred redirectUris\n%s", udsPackage)
 	}
 }
@@ -2195,7 +2243,7 @@ services:
 
 	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
-		"clientId: uds-compose-mattermost",
+		"clientId: uds-compose-{{ .Release.Namespace }}",
 		"name: Mattermost Login",
 	} {
 		if !strings.Contains(udsPackage, want) {
@@ -2251,7 +2299,7 @@ services:
 		}
 		previous = index
 	}
-	if strings.Contains(udsPackage, "https://web.{{ .Values.uds.domain }}/*") {
+	if strings.Contains(udsPackage, "https://{{ .Release.Namespace }}.{{ .Values.uds.domain }}/*") {
 		t.Fatalf("did not expect inferred redirect URI when redirectUris is supplied\n%s", udsPackage)
 	}
 }
@@ -2838,7 +2886,9 @@ func TestExemptionForRootUser(t *testing.T) {
 			exemption := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-exemption.yaml"))
 			for _, want := range []string{
 				"kind: Exemption",
+				"name: compose-{{ .Release.Namespace }}",
 				"namespace: uds-policy-exemptions",
+				"namespace: '{{ .Release.Namespace }}'",
 				"RequireNonRootUser",
 				"^gitea-.*",
 			} {
@@ -2875,7 +2925,9 @@ services:
 	exemption := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-exemption.yaml"))
 	for _, want := range []string{
 		"kind: Exemption",
+		"name: compose-{{ .Release.Namespace }}",
 		"namespace: uds-policy-exemptions",
+		"namespace: '{{ .Release.Namespace }}'",
 		"DisallowPrivileged",
 		"^runner-.*",
 		"privileged policy exemption for homelab runner",
@@ -3114,10 +3166,13 @@ services:
 	}
 
 	// Resources are rendered as chart templates, not raw manifests.
-	for _, rel := range []string{"namespace.yaml", "deployment-api.yaml", "service-api.yaml", "uds-package.yaml"} {
+	for _, rel := range []string{"deployment-api.yaml", "service-api.yaml", "uds-package.yaml"} {
 		if _, err := os.Stat(filepath.Join(outDir, "chart", "templates", rel)); err != nil {
 			t.Fatalf("expected chart template %s: %v", rel, err)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "chart", "templates", "namespace.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("generated chart must not own a Namespace")
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "manifests")); !os.IsNotExist(err) {
 		t.Fatalf("did not expect legacy manifests/ directory")
@@ -3145,6 +3200,137 @@ services:
 	for _, want := range []string{"name: ADDITIONAL_NETWORK_ALLOW", "default: '[]'", "autoIndent: true", "valuesFiles:"} {
 		if !strings.Contains(zarfConfig, want) {
 			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)
+		}
+	}
+}
+
+func TestGeneratedChartUsesReleaseNamespaceForIndependentReleases(t *testing.T) {
+	udsPath, err := exec.LookPath("uds")
+	if err != nil {
+		t.Skip("uds not installed")
+	}
+
+	input := []byte(`name: shop
+services:
+  web:
+    image: ghcr.io/acme/web:1.0.0
+    user: root
+    environment:
+      LOG_LEVEL: info
+    ports:
+      - target: 8080
+        published: "8080"
+        protocol: tcp
+    networks: [front]
+    volumes:
+      - app-data:/var/lib/shop
+    secrets:
+      - api-token
+    configs:
+      - app-config
+  worker:
+    image: ghcr.io/acme/worker:1.0.0
+    networks: [back]
+volumes:
+  app-data: {}
+secrets:
+  api-token:
+    file: ./api-token.txt
+configs:
+  app-config:
+    content: |
+      enabled: true
+networks:
+  front: {}
+  back: {}
+`)
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+	chartDir := filepath.Join(outDir, "chart")
+	renderChart := func(namespace string) []byte {
+		t.Helper()
+		output, renderErr := exec.Command(udsPath, "zarf", "tools", "helm", "template", "shop", chartDir, "--namespace", namespace).CombinedOutput()
+		if renderErr != nil {
+			t.Fatalf("helm template --namespace %s: %v\n%s", namespace, renderErr, output)
+		}
+		return output
+	}
+
+	tenantA := renderChart("tenant-a")
+	tenantB := renderChart("tenant-b")
+	if repeated := renderChart("tenant-a"); !bytes.Equal(tenantA, repeated) {
+		t.Fatal("repeated rendering in the same namespace must be deterministic")
+	}
+
+	validateRelease := func(namespace string, rendered []byte) map[string]struct{} {
+		t.Helper()
+		identities := map[string]struct{}{}
+		for _, document := range decodeYAMLDocuments(t, rendered) {
+			kind, _ := document["kind"].(string)
+			if kind == "Namespace" {
+				t.Fatalf("generated chart must not own a Namespace: %#v", document)
+			}
+			metadata := mustMap(t, document["metadata"])
+			name, _ := metadata["name"].(string)
+			resourceNamespace, _ := metadata["namespace"].(string)
+			if kind == "Exemption" {
+				if resourceNamespace != "uds-policy-exemptions" {
+					t.Fatalf("Exemption namespace = %q, want uds-policy-exemptions", resourceNamespace)
+				}
+				if name != "compose-"+namespace {
+					t.Fatalf("Exemption name = %q, want compose-%s", name, namespace)
+				}
+				spec := mustMap(t, document["spec"])
+				for _, raw := range spec["exemptions"].([]any) {
+					matcher := mustMap(t, mustMap(t, raw)["matcher"])
+					if got := matcher["namespace"]; got != namespace {
+						t.Fatalf("Exemption matcher namespace = %#v, want %q", got, namespace)
+					}
+				}
+			} else if resourceNamespace != namespace {
+				t.Fatalf("%s/%s namespace = %q, want %q", kind, name, resourceNamespace, namespace)
+			}
+			identities[fmt.Sprintf("%s/%s/%s", kind, resourceNamespace, name)] = struct{}{}
+
+			if kind != "Package" {
+				continue
+			}
+			spec := mustMap(t, document["spec"])
+			network := mustMap(t, spec["network"])
+			for _, raw := range network["allow"].([]any) {
+				rule := mustMap(t, raw)
+				if remoteNamespace, exists := rule["remoteNamespace"]; exists && remoteNamespace != namespace {
+					t.Fatalf("network remoteNamespace = %#v, want %q", remoteNamespace, namespace)
+				}
+			}
+			expose := network["expose"].([]any)
+			if got := mustMap(t, expose[0])["host"]; got != namespace {
+				t.Fatalf("inferred gateway host = %#v, want %q", got, namespace)
+			}
+			sso := spec["sso"].([]any)
+			client := mustMap(t, sso[0])
+			if got := client["clientId"]; got != "uds-compose-"+namespace {
+				t.Fatalf("inferred SSO clientId = %#v, want namespace-qualified ID", got)
+			}
+			redirects := client["redirectUris"].([]any)
+			if got := redirects[0]; got != "https://"+namespace+".uds.dev/*" {
+				t.Fatalf("inferred SSO redirect URI = %#v, want namespace-qualified URI", got)
+			}
+		}
+		return identities
+	}
+
+	identitiesA := validateRelease("tenant-a", tenantA)
+	identitiesB := validateRelease("tenant-b", tenantB)
+	for identity := range identitiesA {
+		if _, collides := identitiesB[identity]; collides {
+			t.Fatalf("release resources collide across namespaces at %s", identity)
 		}
 	}
 }
@@ -3417,7 +3603,7 @@ secrets:
 	}
 
 	readme := readFile(t, filepath.Join(outDir, "docs", "README.md"))
-	for _, want := range []string{"# shop", "deploys the shop application to the shop namespace", "zarf package create . --flavor upstream", "[Configuration](configuration.md)", "[Dependencies](dependencies.md)"} {
+	for _, want := range []string{"# shop", "deploys the shop application to the shop namespace by default", "zarf package create . --flavor upstream", "[Configuration](configuration.md)", "[Dependencies](dependencies.md)"} {
 		if !strings.Contains(readme, want) {
 			t.Fatalf("expected generated readme to contain %q\n%s", want, readme)
 		}
@@ -3964,9 +4150,9 @@ configs:
 		t.Fatalf("external reference variables must use YAML block scalars\n%s", zarfValues)
 	}
 
-	helmPath, err := exec.LookPath("helm")
+	udsPath, err := exec.LookPath("uds")
 	if err != nil {
-		t.Log("helm not installed; generated-template assertions completed")
+		t.Log("uds not installed; generated-template assertions completed")
 		return
 	}
 	chartDir := filepath.Join(outDir, "chart")
@@ -3984,7 +4170,7 @@ configs:
 		if writeErr := os.WriteFile(valuesPath, overrides, 0o644); writeErr != nil {
 			t.Fatalf("write Helm overrides: %v", writeErr)
 		}
-		return exec.Command(helmPath, "template", "shop", chartDir, "--values", valuesPath).CombinedOutput()
+		return exec.Command(udsPath, "zarf", "tools", "helm", "template", "shop", chartDir, "--values", valuesPath).CombinedOutput()
 	}
 
 	rendered, err := render(t, "operator-settings", "settings.yaml")
@@ -4582,7 +4768,19 @@ func readUDSPackageYAMLMap(t *testing.T, path string) map[string]any {
 
 func findYAMLDocumentByKind(t *testing.T, content []byte, kind string) map[string]any {
 	t.Helper()
+	for _, document := range decodeYAMLDocuments(t, content) {
+		if document["kind"] == kind {
+			return document
+		}
+	}
+	t.Fatalf("rendered YAML did not contain kind %s\n%s", kind, content)
+	return nil
+}
+
+func decodeYAMLDocuments(t *testing.T, content []byte) []map[string]any {
+	t.Helper()
 	decoder := yamlv3.NewDecoder(bytes.NewReader(content))
+	var documents []map[string]any
 	for {
 		var document map[string]any
 		err := decoder.Decode(&document)
@@ -4592,12 +4790,11 @@ func findYAMLDocumentByKind(t *testing.T, content []byte, kind string) map[strin
 		if err != nil {
 			t.Fatalf("decode rendered YAML: %v\n%s", err, content)
 		}
-		if document["kind"] == kind {
-			return document
+		if len(document) > 0 {
+			documents = append(documents, document)
 		}
 	}
-	t.Fatalf("rendered YAML did not contain kind %s\n%s", kind, content)
-	return nil
+	return documents
 }
 
 func readFile(t *testing.T, path string) string {

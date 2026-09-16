@@ -716,7 +716,7 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 				case "version":
 					path += " (use x-uds.metadata.version)"
 				case "namespace":
-					path += " (namespace is derived from x-uds.metadata.name or the Compose project name)"
+					path += " (the default deployment namespace is derived from x-uds.metadata.name or the Compose project name)"
 				case "group":
 					path += " (remove this field; generated SSO client IDs use the compose group)"
 				default:
