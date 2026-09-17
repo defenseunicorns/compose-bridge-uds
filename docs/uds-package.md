@@ -2,6 +2,8 @@
 
 The bridge maps the [Compose Specification](https://compose-spec.io/) to Kubernetes resources and synthesizes a [UDS Package CR](https://docs.defenseunicorns.com/core/reference/operator--crds/packages-v1alpha1-cr/) for network policy, monitoring, SSO, and trust-bundle distribution. It renders these resources as a Helm chart under `out/chart/`, referenced by `out/zarf.yaml` with `localPath: chart`.
 
+The generated chart uses Helm's `{{ .Release.Namespace }}` for namespaced resources and namespace-specific identities. The chart entry in `zarf.yaml` sets the default namespace; Zarf controls namespace creation and placement.
+
 Generated packages include consumer documentation under `out/docs/`. The top-level `documentation` map in `out/zarf.yaml` embeds the generated package readme, deploy-time configuration reference, and application dependency reference so they can be inspected from the packaged artifact.
 
 The generated Zarf component uses one inferred package flavor. It is `registry1` when every packaged image originates from `registry1.dso.mil`; otherwise it is `upstream`. Use that flavor when running `zarf package create`; the generated package readme includes the exact command.
@@ -16,9 +18,9 @@ Package-owned secrets are rendered from chart values rather than baked into temp
 
 ## Inferred behavior
 
-- **Expose:** Services with published `ports:` are exposed on the tenant gateway. For multi-port services, the bridge prefers Compose `app_protocol` or `name` values indicating web traffic, then falls back to the first published port.
+- **Expose:** Services with published `ports:` are exposed on the tenant gateway. When the first expose rule omits `host`, it uses the Helm release namespace; an explicit host remains literal. For multi-port services, the bridge prefers Compose `app_protocol` or `name` values indicating web traffic, then falls back to the first published port.
 - **Network allow:** Intra-namespace ingress and egress rules are always included so services in the namespace can communicate. Static `x-uds.spec.network.allow` entries follow inferred rules, and deploy-time `ADDITIONAL_NETWORK_ALLOW` entries are appended last.
-- **SSO:** A Keycloak client is generated for the first exposed service and omitted when no services are exposed. Its default name is `<Package Name> Login` and its client ID is `uds-<group>-<package-name>`, with `compose` as the default group. Inferred redirect URIs use the package's deploy-time `DOMAIN`, which defaults to `uds.dev`.
+- **SSO:** A Keycloak client is generated for the first exposed service and omitted when no services are exposed. Its default name is `<Package Name> Login` and its client ID is `uds-compose-<release-namespace>`. Its inferred redirect URI uses the first endpoint's host and `DOMAIN`, which defaults to `uds.dev`.
 - **Policy exemptions:** Services requiring UDS policy exceptions produce `chart/templates/uds-exemption.yaml`.
 - **Monitoring:** Metrics monitors are inferred from ports named `metrics` or `prometheus`, common exporter ports, and `METRICS_PORT` or `PROMETHEUS_PORT` environment variables when they match a declared TCP port. Set `x-uds.spec.monitor` to take complete control of monitoring, including `x-uds.spec.monitor: []` to disable inference.
 - **Development dependencies:** Services referenced only by `depends_on` entries with `required: false` are omitted along with resources used exclusively by them.
@@ -29,7 +31,7 @@ Use `x-uds` [Compose extension keys](https://docs.docker.com/reference/compose-f
 
 | Key | Purpose |
 |---|---|
-| `x-uds.metadata.name` | Package name and namespace override (default: Compose project name). |
+| `x-uds.metadata.name` | Package name and Zarf default namespace (default: Compose project name). |
 | `x-uds.metadata.version` | Package version override. A semantic upstream version receives `-uds.0`; an existing `<upstream>-uds.<sub-version>` value is preserved. |
 | `x-uds.metadata.labels` | Labels applied to generated UDS Package metadata. |
 | `x-uds.metadata.annotations` | Annotations applied to generated UDS Package metadata and Zarf package metadata. |
@@ -52,7 +54,7 @@ x-uds:
 
 ### Extension notes
 
-- **`x-uds.spec.sso`:** Missing `clientId`, `name`, `redirectUris`, and `enableAuthserviceSelector` fields are inferred. Inferred client IDs use the fixed `compose` package group segment. Inferred redirect URIs use `DOMAIN`; explicitly supplied client IDs, names, and redirect URIs remain unchanged. An explicitly empty list disables inferred SSO without removing `DOMAIN` from the package interface.
+- **`x-uds.spec.sso`:** Missing fields are inferred. Explicit values remain unchanged, and an empty list disables inferred SSO.
 - **`x-uds.spec.monitor[]`:** When this key is absent, the bridge infers common metrics endpoints but cannot recognize every application-specific metrics configuration. When present, entries may be raw UDS `spec.monitor[]` items or use the bridge-only `service` key to infer labels and port metadata; no additional monitors are inferred. Set `portName` or `targetPort` for multi-port services, or set an empty list to disable monitoring.
 - **`x-uds.spec.caBundle.configMap`:** This customizes the namespace trust-bundle ConfigMap. Trust bundle contents are configured separately in UDS Core.
 
@@ -91,21 +93,21 @@ Generated exemption:
 apiVersion: uds.dev/v1alpha1
 kind: Exemption
 metadata:
-  name: homelab
+  name: compose-{{ .Release.Namespace }}
   namespace: uds-policy-exemptions
 spec:
   exemptions:
     - title: root user policy exemption for homelab gitea
       matcher:
         kind: pod
-        namespace: homelab
+        namespace: '{{ .Release.Namespace }}'
         name: ^gitea-.*
       policies:
         - RequireNonRootUser
     - title: privileged policy exemption for homelab runner
       matcher:
         kind: pod
-        namespace: homelab
+        namespace: '{{ .Release.Namespace }}'
         name: ^runner-.*
       policies:
         - DisallowPrivileged

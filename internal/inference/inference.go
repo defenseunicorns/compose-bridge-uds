@@ -34,29 +34,47 @@ func MetricsPorts(service model.Service) []model.Port {
 	return ports
 }
 
-// PrimaryExposedService returns the host and service used for inferred SSO.
-func PrimaryExposedService(app model.App) (host string, service string) {
+// Exposure identifies the primary exposed service and retains whether its host
+// came from explicit package configuration.
+type Exposure struct {
+	Service      string
+	host         string
+	hostExplicit bool
+}
+
+// ResolveHost preserves an explicit host, returns no host when nothing is
+// exposed, and otherwise uses the caller's inferred host.
+func (exposure Exposure) ResolveHost(inferredHost string) string {
+	if exposure.hostExplicit {
+		return exposure.host
+	}
+	if exposure.Service == "" {
+		return ""
+	}
+	return inferredHost
+}
+
+// PrimaryExposure returns the first exposed service used for SSO inference.
+func PrimaryExposure(app model.App) Exposure {
 	if app.Package.NetworkExposeConfigured {
 		for _, raw := range app.Package.NetworkExpose {
 			if item, ok := raw.(map[string]any); ok {
-				host, _ = item["host"].(string)
-				service, _ = item["service"].(string)
-				if host == "" {
-					host = service
-				}
-				return host, service
+				hostValue, hostExists := item["host"]
+				host, _ := hostValue.(string)
+				service, _ := item["service"].(string)
+				return Exposure{Service: service, host: host, hostExplicit: hostExists}
 			}
 		}
-		return "", ""
+		return Exposure{}
 	}
 	for _, candidate := range app.Services {
 		for _, port := range candidate.Ports {
 			if port.Published {
-				return candidate.Name, candidate.Name
+				return Exposure{Service: candidate.Name}
 			}
 		}
 	}
-	return "", ""
+	return Exposure{}
 }
 
 func isMetricsPortName(name string) bool {

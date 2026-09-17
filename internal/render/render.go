@@ -43,6 +43,7 @@ const (
 	// claim the same Zarf variable name.
 	additionalNetworkAllowVariable    = "ADDITIONAL_NETWORK_ALLOW"
 	additionalNetworkAllowPlaceholder = "__HELM_ADDITIONAL_NETWORK_ALLOW__"
+	helmReleaseNamespace              = "{{ .Release.Namespace }}"
 	zarfNetworkAllowPlaceholder       = "__ZARF_ADDITIONAL_NETWORK_ALLOW__"
 	domainVariable                    = "DOMAIN"
 	defaultDomain                     = "uds.dev"
@@ -222,19 +223,6 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 		}
 	}
 
-	if err := writeYAMLFile(filepath.Join(templatesDir, "namespace.yaml"), namespaceManifest{
-		APIVersion: "v1",
-		Kind:       "Namespace",
-		Metadata: objectMeta{
-			Name: app.Package.Namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/part-of": app.Package.Name,
-			},
-		},
-	}); err != nil {
-		return err
-	}
-
 	for _, name := range sortedVolumeNames(app.Volumes) {
 		volume := app.Volumes[name]
 		if volume.External {
@@ -245,7 +233,7 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 			Kind:       "PersistentVolumeClaim",
 			Metadata: objectMeta{
 				Name:      volume.Name,
-				Namespace: app.Package.Namespace,
+				Namespace: helmReleaseNamespace,
 				Labels:    appLabels(app.Package.Name, volume.Name),
 			},
 			Spec: persistentVolumeClaimSpec{
@@ -267,7 +255,7 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 			Kind:       "ConfigMap",
 			Metadata: objectMeta{
 				Name:      config.Name,
-				Namespace: app.Package.Namespace,
+				Namespace: helmReleaseNamespace,
 				Labels:    reloadableAppLabels(app.Package.Name, config.Name),
 			},
 			Data: map[string]string{config.Name: config.Content},
@@ -306,7 +294,7 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 	for _, svc := range app.Services {
 		deployment, helmValues, err := buildDeployment(
 			app.Package.Name,
-			app.Package.Namespace,
+			helmReleaseNamespace,
 			svc,
 			servicePorts,
 			preserveNetworkMembership,
@@ -321,7 +309,7 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 		if err := writeDeploymentTemplate(filepath.Join(templatesDir, fmt.Sprintf("deployment-%s.yaml", svc.Name)), deployment, svc.Name, helmValues); err != nil {
 			return err
 		}
-		if err := writeYAMLFile(filepath.Join(templatesDir, fmt.Sprintf("service-%s.yaml", svc.Name)), buildService(app.Package.Name, app.Package.Namespace, svc)); err != nil {
+		if err := writeYAMLFile(filepath.Join(templatesDir, fmt.Sprintf("service-%s.yaml", svc.Name)), buildService(app.Package.Name, helmReleaseNamespace, svc)); err != nil {
 			return err
 		}
 	}
@@ -402,7 +390,7 @@ func writePackageDocumentation(root string, app model.App, secretVariables map[s
 func buildPackageReadme(app model.App, flavor string) string {
 	return fmt.Sprintf(`# %s
 
-This UDS package was generated from Docker Compose. It deploys the %s application to the %s namespace.
+This UDS package was generated from Docker Compose. Zarf deploys the %s application to the %s namespace by default and controls namespace creation and placement.
 
 ## Build
 
@@ -728,10 +716,7 @@ func writeDeploymentTemplate(path string, manifest deploymentManifest, serviceNa
 		}
 		rendered = strings.Replace(rendered, value.Placeholder, value.Template, 1)
 	}
-	if err := os.WriteFile(path, []byte(rendered), 0o644); err != nil {
-		return fmt.Errorf("write file %s: %w", path, err)
-	}
-	return nil
+	return writeRenderedFile(path, rendered)
 }
 
 // writeSecretTemplate writes a Helm-templated Secret whose value is sourced from
@@ -743,7 +728,7 @@ func writeSecretTemplate(path string, app model.App, secret model.Secret, variab
 		Kind:       "Secret",
 		Metadata: objectMeta{
 			Name:      secret.Name,
-			Namespace: app.Package.Namespace,
+			Namespace: helmReleaseNamespace,
 			Labels:    appLabels(app.Package.Name, secret.Name),
 		},
 		Type:       "Opaque",
@@ -754,10 +739,7 @@ func writeSecretTemplate(path string, app model.App, secret model.Secret, variab
 	}
 	rendered := strings.ReplaceAll(string(data), secretValuePlaceholder,
 		fmt.Sprintf("{{ .Values.secrets.%s | quote }}", variableName))
-	if err := os.WriteFile(path, []byte(rendered), 0o644); err != nil {
-		return fmt.Errorf("write file %s: %w", path, err)
-	}
-	return nil
+	return writeRenderedFile(path, rendered)
 }
 
 // writeEnvironmentConfigMapTemplate writes one observable configuration object
@@ -781,7 +763,7 @@ func writeEnvironmentConfigMapTemplate(path string, app model.App, svc model.Ser
 		Kind:       "ConfigMap",
 		Metadata: objectMeta{
 			Name:      environmentConfigMapName(svc.Name),
-			Namespace: app.Package.Namespace,
+			Namespace: helmReleaseNamespace,
 			Labels:    reloadableAppLabels(app.Package.Name, svc.Name),
 		},
 		Data: data,
@@ -794,10 +776,7 @@ func writeEnvironmentConfigMapTemplate(path string, app model.App, svc model.Ser
 	for placeholder, helmValue := range placeholders {
 		rendered = strings.ReplaceAll(rendered, placeholder, helmValue)
 	}
-	if err := os.WriteFile(path, []byte(rendered), 0o644); err != nil {
-		return fmt.Errorf("write file %s: %w", path, err)
-	}
-	return nil
+	return writeRenderedFile(path, rendered)
 }
 
 // writeUDSPackageTemplate preserves the statically generated network rules and
@@ -819,10 +798,7 @@ func writeUDSPackageTemplate(path string, manifest udsPackageManifest) error {
 	if rendered == string(marshaled) {
 		return fmt.Errorf("render additional network allow template in %s: placeholder not found", path)
 	}
-	if err := os.WriteFile(path, []byte(rendered), 0o644); err != nil {
-		return fmt.Errorf("write file %s: %w", path, err)
-	}
-	return nil
+	return writeRenderedFile(path, rendered)
 }
 
 // writeChartMetadata writes the generated chart's Chart.yaml.
@@ -1289,7 +1265,7 @@ func buildUDSPackage(app model.App) (udsPackageManifest, error) {
 		Kind:       "Package",
 		Metadata: objectMeta{
 			Name:        app.Package.Name,
-			Namespace:   app.Package.Namespace,
+			Namespace:   helmReleaseNamespace,
 			Labels:      app.Package.Labels,
 			Annotations: app.Package.Annotations,
 		},
@@ -1313,7 +1289,7 @@ func buildNetworkAllowRules(app model.App) []any {
 				"description":     fmt.Sprintf("compose-%s-%s", network, strings.ToLower(direction)),
 				"direction":       direction,
 				"selector":        map[string]string{labelKey: "true"},
-				"remoteNamespace": app.Package.Namespace,
+				"remoteNamespace": helmReleaseNamespace,
 				"remoteSelector":  map[string]string{labelKey: "true"},
 			})
 		}
@@ -1382,9 +1358,13 @@ func buildAutoExposes(app model.App) []any {
 			continue
 		}
 		svcSelector := map[string]string{"app.kubernetes.io/name": svc.Name}
+		host := svc.Name
+		if len(expose) == 0 {
+			host = helmReleaseNamespace
+		}
 		expose = append(expose, map[string]any{
 			"service":   svc.Name,
-			"host":      svc.Name,
+			"host":      host,
 			"gateway":   "tenant",
 			"port":      port.Number,
 			"selector":  svcSelector,
@@ -1399,7 +1379,7 @@ func enrichNetworkExposes(app model.App) []any {
 	serviceByName := buildServiceIndex(app.Services)
 	enriched := make([]any, 0, len(app.Package.NetworkExpose))
 
-	for _, raw := range app.Package.NetworkExpose {
+	for exposeIndex, raw := range app.Package.NetworkExpose {
 		item, ok := raw.(map[string]any)
 		if !ok {
 			enriched = append(enriched, raw)
@@ -1408,7 +1388,11 @@ func enrichNetworkExposes(app model.App) []any {
 
 		serviceName, _ := item["service"].(string)
 		setDefault(item, "gateway", "tenant")
-		setDefault(item, "host", serviceName)
+		defaultHost := serviceName
+		if exposeIndex == 0 {
+			defaultHost = helmReleaseNamespace
+		}
+		setDefault(item, "host", defaultHost)
 
 		if svc, found := serviceByName[serviceName]; found {
 			svcSelector := map[string]string{"app.kubernetes.io/name": svc.Name}
@@ -1430,13 +1414,16 @@ func enrichNetworkExposes(app model.App) []any {
 
 // buildSSO generates, disables, or enriches SSO configuration.
 func buildSSO(app model.App) []any {
+	primaryExposure := inference.PrimaryExposure(app)
+	host := primaryExposure.ResolveHost(helmReleaseNamespace)
+	service := primaryExposure.Service
 	if app.Package.SSOConfigured {
 		if len(app.Package.SSO) == 0 {
 			return nil
 		}
-		return enrichSSOEntries(app)
+		return enrichSSOEntries(app, host, service)
 	}
-	return buildInferredSSO(app)
+	return buildInferredSSO(app, host, service)
 }
 
 func buildMonitor(app model.App) ([]any, error) {
@@ -1664,8 +1651,7 @@ func lookupRawInt(values map[string]any, key string) (int, bool) {
 }
 
 // buildInferredSSO generates a default SSO client from the app's expose rules.
-func buildInferredSSO(app model.App) []any {
-	host, service := inference.PrimaryExposedService(app)
+func buildInferredSSO(app model.App, host, service string) []any {
 	if host == "" {
 		return nil
 	}
@@ -1684,8 +1670,7 @@ func buildInferredSSO(app model.App) []any {
 }
 
 // enrichSSOEntries fills in missing fields on user-provided x-uds.spec.sso entries.
-func enrichSSOEntries(app model.App) []any {
-	host, service := inference.PrimaryExposedService(app)
+func enrichSSOEntries(app model.App, host, service string) []any {
 	enriched := make([]any, 0, len(app.Package.SSO))
 
 	for _, raw := range app.Package.SSO {
@@ -1716,7 +1701,7 @@ func inferredSSOClientID(pkg model.Package) string {
 	if group == "" {
 		group = "compose"
 	}
-	return fmt.Sprintf("uds-%s-%s", group, pkg.Name)
+	return fmt.Sprintf("uds-%s-%s", group, helmReleaseNamespace)
 }
 
 func inferredSSOName(pkg model.Package) string {
@@ -2104,7 +2089,7 @@ func buildUDSExemption(app model.App) *udsExemptionManifest {
 			Title: fmt.Sprintf("%s policy exemption for %s %s", serviceExemptionType(svc), app.Package.Name, svc.Name),
 			Matcher: udsExemptionMatcher{
 				Kind:      "pod",
-				Namespace: app.Package.Namespace,
+				Namespace: helmReleaseNamespace,
 				Name:      fmt.Sprintf("^%s-.*", svc.Name),
 			},
 			Policies: policies,
@@ -2117,7 +2102,7 @@ func buildUDSExemption(app model.App) *udsExemptionManifest {
 		APIVersion: "uds.dev/v1alpha1",
 		Kind:       "Exemption",
 		Metadata: objectMeta{
-			Name:      app.Package.Name,
+			Name:      fmt.Sprintf("compose-%s", helmReleaseNamespace),
 			Namespace: "uds-policy-exemptions",
 		},
 		Spec: udsExemptionSpec{
@@ -2493,7 +2478,11 @@ func writeYAMLFile(path string, value any) error {
 	if err != nil {
 		return fmt.Errorf("marshal yaml for %s: %w", path, err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	return writeRenderedFile(path, string(data))
+}
+
+func writeRenderedFile(path, rendered string) error {
+	if err := os.WriteFile(path, []byte(rendered), 0o644); err != nil {
 		return fmt.Errorf("write file %s: %w", path, err)
 	}
 	return nil
@@ -2598,12 +2587,6 @@ type objectMeta struct {
 	Namespace   string            `yaml:"namespace,omitempty"`
 	Labels      map[string]string `yaml:"labels,omitempty"`
 	Annotations map[string]string `yaml:"annotations,omitempty"`
-}
-
-type namespaceManifest struct {
-	APIVersion string     `yaml:"apiVersion"`
-	Kind       string     `yaml:"kind"`
-	Metadata   objectMeta `yaml:"metadata"`
 }
 
 type persistentVolumeClaimManifest struct {

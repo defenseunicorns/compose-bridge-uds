@@ -101,7 +101,16 @@ The four quantities are independent. A deployment can override one without resta
 
 ## Package domain
 
-Every generated package exposes the non-sensitive Zarf variable `DOMAIN`, defaulting to `uds.dev`. The value is available to the generated Helm chart as `uds.domain` and configures domain-aware endpoints inferred by the bridge, including inferred SSO redirect URIs. An `x-uds.spec.sso` redirect URI supplied by the Compose author remains literal, including any Helm expression it contains.
+Every generated package defines the non-sensitive Zarf variable `DOMAIN`, which defaults to `uds.dev`.
+
+The Helm release namespace defaults to the package name unless a different namespace is selected at deployment. Together, these defaults determine inferred endpoints and redirects:
+
+| Value | If omitted | If set |
+|---|---|---|
+| First endpoint host | Helm release namespace | Preserved as written |
+| SSO redirect URI | `https://<endpoint-host>.<DOMAIN>/*` | Preserved as written |
+
+For example, a package named `hello-world` with no overrides uses the `hello-world` namespace, the endpoint `hello-world.uds.dev`, and the SSO redirect URI `https://hello-world.uds.dev/*`.
 
 `DOMAIN` is package configuration, not container configuration. The bridge does not inject it into application containers or give special meaning to a Compose environment variable named `DOMAIN`. Applications that need their public origin must continue to declare the setting expected by the image, such as `PUBLIC_URL`, `ROOT_URL`, or `APP_ORIGIN`, in Compose.
 
