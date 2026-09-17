@@ -117,7 +117,7 @@ For a package named `hello-world` with `DOMAIN=uds.dev`, common deployment patte
 
 The namespace controls placement and the SSO client ID. `HOST_NAME` only changes the first inferred host and redirect; it does not rename resources. Explicit `x-uds` values take precedence.
 
-`HOST_NAME` and `DOMAIN` are package configuration, not container configuration. The bridge does not inject them into application containers or give special meaning to a Compose environment variables named `HOST_NAME` or `DOMAIN`. Applications that need their public origin must continue to declare the setting expected by the image, such as `PUBLIC_URL`, `ROOT_URL`, or `APP_ORIGIN`, in Compose.
+`HOST_NAME` and `DOMAIN` configure the generated UDS endpoint, not the application itself. If the application needs its public URL, set the environment variable it expects, such as `PUBLIC_URL`, `ROOT_URL`, or `APP_ORIGIN`.
 
 ## Deploy-time network access
 
