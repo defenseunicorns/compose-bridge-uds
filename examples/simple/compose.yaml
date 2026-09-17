@@ -41,6 +41,8 @@ volumes:
   db_data: {}
 
 x-uds:
+  metadata:
+    version: dev
   spec:
     network:
       expose:

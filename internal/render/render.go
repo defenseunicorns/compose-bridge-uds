@@ -808,9 +808,16 @@ func writeChartMetadata(path string, app model.App) error {
 		Name:        app.Package.Name,
 		Description: fmt.Sprintf("UDS package generated from Docker Compose for %s", app.Package.Name),
 		Type:        "application",
-		Version:     app.Package.Version,
+		Version:     chartVersion(app.Package),
 		AppVersion:  app.Package.UpstreamVersion,
 	})
+}
+
+func chartVersion(pkg model.Package) string {
+	if pkg.Version == model.DevelopmentVersion {
+		return model.DevelopmentChartVersion
+	}
+	return pkg.Version
 }
 
 // writeChartValues writes service environment, config reference, and secret
@@ -1037,7 +1044,7 @@ func writeZarfConfig(
 		Name:      app.Package.Name,
 		Namespace: app.Package.Namespace,
 		LocalPath: chartDirName,
-		Version:   app.Package.Version,
+		Version:   chartVersion(app.Package),
 		ValuesFiles: []string{
 			zarfValuesRel,
 		},

@@ -245,6 +245,19 @@ services:
 			upstreamVersion: "5.6.0",
 			packageVersion:  "5.6.0-uds.0",
 		},
+		{
+			name: "development version preserves dev and infers app version",
+			input: `name: demo
+x-uds:
+  metadata:
+    version: dev
+services:
+  api:
+    image: ghcr.io/acme/api:1.2.3
+`,
+			upstreamVersion: "1.2.3",
+			packageVersion:  "dev",
+		},
 	}
 
 	for _, tt := range tests {
@@ -3204,6 +3217,49 @@ services:
 	}
 }
 
+func TestWritePackageUsesDevelopmentPackageAndChartVersions(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: example
+x-uds:
+  metadata:
+    version: dev
+services:
+  example:
+    image: example/example:1.2.3
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	chartMetadata := readYAMLMap(t, filepath.Join(outDir, "chart", "Chart.yaml"))
+	if got := chartMetadata["version"]; got != "0.0.0-dev" {
+		t.Fatalf("Chart.yaml version = %#v, want 0.0.0-dev", got)
+	}
+	if got := chartMetadata["appVersion"]; got != "1.2.3" {
+		t.Fatalf("Chart.yaml appVersion = %#v, want 1.2.3", got)
+	}
+
+	zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
+	zarfMetadata := mustMap(t, zarfConfig["metadata"])
+	if got := zarfMetadata["version"]; got != "dev" {
+		t.Fatalf("zarf.yaml metadata.version = %#v, want dev", got)
+	}
+	components := mustSlice(t, zarfConfig["components"])
+	component := mustMap(t, components[0])
+	charts := mustSlice(t, component["charts"])
+	chart := mustMap(t, charts[0])
+	if got := chart["version"]; got != "0.0.0-dev" {
+		t.Fatalf("zarf.yaml chart version = %#v, want 0.0.0-dev", got)
+	}
+}
+
 func TestGeneratedChartUsesReleaseNamespaceForIndependentReleases(t *testing.T) {
 	udsPath, err := exec.LookPath("uds")
 	if err != nil {
@@ -4823,4 +4879,13 @@ func mustMap(t *testing.T, value any) map[string]any {
 		t.Fatalf("expected map[string]any, got %T", value)
 	}
 	return m
+}
+
+func mustSlice(t *testing.T, value any) []any {
+	t.Helper()
+	slice, ok := value.([]any)
+	if !ok {
+		t.Fatalf("expected []any, got %T", value)
+	}
+	return slice
 }

@@ -51,6 +51,8 @@ secrets:
     file: ./app-secret.txt
 
 x-uds:
+  metadata:
+    version: dev
   spec:
     network:
       expose:

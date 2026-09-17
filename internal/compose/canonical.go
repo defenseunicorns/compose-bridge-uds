@@ -181,7 +181,7 @@ func remediationForInvalidSetting(path string) string {
 	case path == "x-uds.metadata.name":
 		return "set x-uds.metadata.name to a lowercase DNS-1123-compatible value"
 	case path == "x-uds.metadata.version":
-		return "set x-uds.metadata.version to a non-empty version string such as 1.2.3 or 1.2.3-uds.0"
+		return "set x-uds.metadata.version to dev or a non-empty version string such as 1.2.3 or 1.2.3-uds.0"
 	case strings.HasPrefix(path, "x-uds.metadata.labels"), strings.HasPrefix(path, "x-uds.metadata.annotations"):
 		return "set this metadata field to an object whose values are strings"
 	case path == "x-uds.spec":
@@ -407,9 +407,11 @@ func loadProject(project types.Project, raw map[string]any, excludedServices map
 	}
 
 	markBoundarySecretsExternal(services, secrets, excludedSecretRefs)
-	if !packageCfg.VersionConfigured {
+	if !packageCfg.VersionConfigured || packageCfg.Version == model.DevelopmentVersion {
 		packageCfg.UpstreamVersion = inferUpstreamVersion(services)
-		packageCfg.Version = packageCfg.UpstreamVersion + "-uds.0"
+		if !packageCfg.VersionConfigured {
+			packageCfg.Version = packageCfg.UpstreamVersion + "-uds.0"
+		}
 		for i := range services {
 			if services[i].Build != nil {
 				services[i].Image = builtImageReference(packageCfg, services[i].Name)
@@ -914,6 +916,10 @@ func imageTag(image string) string {
 }
 
 func normalizeConfiguredPackageVersion(value string) (string, string, error) {
+	if value == model.DevelopmentVersion {
+		return model.DefaultUpstreamVersion, model.DevelopmentVersion, nil
+	}
+
 	if matches := udsVersionPattern.FindStringSubmatch(value); matches != nil {
 		upstream, ok := normalizeUpstreamVersion(matches[1])
 		if !ok {
