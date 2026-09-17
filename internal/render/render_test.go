@@ -2,7 +2,6 @@ package render_test
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -1610,7 +1609,6 @@ configs:
       contentValue:
         name: startupScriptContent
         default: ""
-      rolloutOnChange: true
 `)
 
 	app, err := compose.LoadCanonicalYAML(input)
@@ -1622,7 +1620,7 @@ configs:
 		t.Fatalf("config mode = %#v, want 0755", ref.Mode)
 	}
 	bridge := app.Configs["startup-script"].Bridge
-	if bridge == nil || bridge.EnabledValue == nil || bridge.ContentValue == nil || !bridge.RolloutOnChange {
+	if bridge == nil || bridge.EnabledValue == nil || bridge.ContentValue == nil {
 		t.Fatalf("bridge config was not preserved: %#v", bridge)
 	}
 
@@ -1647,6 +1645,7 @@ configs:
 	for _, want := range []string{
 		`{{- if index .Values "enableStartupScripts" }}`,
 		"name: floci-startup-script",
+		`uds.dev/pod-reload: "true"`,
 		"startup.sh:",
 		`index .Values "startupScriptContent" | toString | quote`,
 	} {
@@ -1657,8 +1656,6 @@ configs:
 	deploymentTemplate := readFile(t, filepath.Join(chartDir, "templates", "deployment-floci.yaml"))
 	for _, want := range []string{
 		`if index .Values "enableStartupScripts"`,
-		`index .Values "startupScriptContent" | toString | sha256sum | quote`,
-		"checksum/startup-script:",
 		"defaultMode: 493",
 		"mountPath: /etc/localstack/init/ready.d/startup.sh",
 		"subPath: startup.sh",
@@ -1666,6 +1663,9 @@ configs:
 		if !strings.Contains(deploymentTemplate, want) {
 			t.Fatalf("expected configurable Deployment template to contain %q\n%s", want, deploymentTemplate)
 		}
+	}
+	if strings.Contains(deploymentTemplate, "checksum/") {
+		t.Fatalf("did not expect configurable Deployment template to contain checksum annotations\n%s", deploymentTemplate)
 	}
 	configuration := readFile(t, filepath.Join(outDir, "docs", "configuration.md"))
 	for _, want := range []string{"## Helm values", "`enableStartupScripts`", "`startupScriptContent`"} {
@@ -1708,10 +1708,6 @@ configs:
 	}
 	disabledDeployment := findYAMLDocumentByKind(t, disabled, "Deployment")
 	disabledPodTemplate := mustMap(t, mustMap(t, disabledDeployment["spec"])["template"])
-	disabledTemplateMetadata := mustMap(t, disabledPodTemplate["metadata"])
-	if _, exists := disabledTemplateMetadata["annotations"]; exists {
-		t.Fatalf("disabled config rendered checksum annotations: %#v", disabledTemplateMetadata)
-	}
 	disabledPodSpec := mustMap(t, disabledPodTemplate["spec"])
 	if _, exists := disabledPodSpec["volumes"]; exists {
 		t.Fatalf("disabled config rendered volumes: %#v", disabledPodSpec["volumes"])
@@ -1729,6 +1725,9 @@ configs:
 	}
 	deploymentA := findYAMLDocumentByKind(t, enabledA, "Deployment")
 	podTemplateA := mustMap(t, mustMap(t, deploymentA["spec"])["template"])
+	if _, exists := mustMap(t, podTemplateA["metadata"])["annotations"]; exists {
+		t.Fatalf("enabled config rendered unexpected Pod-template annotations: %#v", podTemplateA["metadata"])
+	}
 	podSpecA := mustMap(t, podTemplateA["spec"])
 	volume := mustMap(t, podSpecA["volumes"].([]any)[0])
 	configMapVolume := mustMap(t, volume["configMap"])
@@ -1749,20 +1748,6 @@ configs:
 	}
 	if mount["subPath"] != item["path"] {
 		t.Fatalf("mount subPath is not projected by the volume: mount=%#v item=%#v", mount, item)
-	}
-	annotationsA := mustMap(t, mustMap(t, podTemplateA["metadata"])["annotations"])
-	wantChecksumA := fmt.Sprintf("%x", sha256.Sum256([]byte(contentA)))
-	if annotationsA["checksum/startup-script"] != wantChecksumA {
-		t.Fatalf("checksum = %#v, want %q", annotationsA["checksum/startup-script"], wantChecksumA)
-	}
-
-	contentB := contentA + "awslocal iam create-role --role-name argo-server --assume-role-policy-document '{}'\n"
-	enabledB := renderChart(t, true, contentB)
-	deploymentB := findYAMLDocumentByKind(t, enabledB, "Deployment")
-	podTemplateB := mustMap(t, mustMap(t, deploymentB["spec"])["template"])
-	annotationsB := mustMap(t, mustMap(t, podTemplateB["metadata"])["annotations"])
-	if annotationsA["checksum/startup-script"] == annotationsB["checksum/startup-script"] {
-		t.Fatalf("changing startupScriptContent did not change the Pod-template checksum")
 	}
 }
 
@@ -1788,7 +1773,6 @@ configs:
       contentValue:
         name: startupScriptContent
         default: ""
-      rolloutOnChange: true
 `)
 
 	app, err := compose.LoadCanonicalYAML(input)
@@ -1936,6 +1920,13 @@ func TestLoadCanonicalRejectsInvalidComposeBridgeConfigControls(t *testing.T) {
       enabledValue:
         name: enableStartupScripts`,
 			want: "external configs cannot use chart-owned rendering controls",
+		},
+		{
+			name: "removed rollout control",
+			config: `content: ""
+    x-compose-bridge:
+      rolloutOnChange: true`,
+			want: "configs.startup-script.x-compose-bridge.rolloutOnChange: unsupported field",
 		},
 		{
 			name:       "mode outside Kubernetes range",

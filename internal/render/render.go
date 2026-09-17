@@ -288,7 +288,7 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 	}
 
 	for _, svc := range app.Services {
-		deployment, helmValues, conditionalVolumes, checksums, err := buildDeployment(
+		deployment, helmValues, conditionalVolumes, err := buildDeployment(
 			app.Package.Name,
 			helmReleaseNamespace,
 			svc,
@@ -302,7 +302,7 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 		if err != nil {
 			return err
 		}
-		if err := writeDeploymentTemplate(filepath.Join(templatesDir, fmt.Sprintf("deployment-%s.yaml", svc.Name)), deployment, svc.Name, helmValues, conditionalVolumes, checksums); err != nil {
+		if err := writeDeploymentTemplate(filepath.Join(templatesDir, fmt.Sprintf("deployment-%s.yaml", svc.Name)), deployment, svc.Name, helmValues, conditionalVolumes); err != nil {
 			return err
 		}
 		if err := writeYAMLFile(filepath.Join(templatesDir, fmt.Sprintf("service-%s.yaml", svc.Name)), buildService(app.Package.Name, helmReleaseNamespace, svc)); err != nil {
@@ -641,7 +641,7 @@ func sortedStringSet(values map[string]struct{}) []string {
 
 // writeDeploymentTemplate replaces the generated resource sentinel with a Helm
 // block that emits only resource quantities supplied for this service.
-func writeDeploymentTemplate(path string, manifest deploymentManifest, serviceName string, helmValues []helmValueReplacement, conditionalVolumes []conditionalVolume, checksums []configChecksum) error {
+func writeDeploymentTemplate(path string, manifest deploymentManifest, serviceName string, helmValues []helmValueReplacement, conditionalVolumes []conditionalVolume) error {
 	marshaled, err := yamlv3.Marshal(manifest)
 	if err != nil {
 		return fmt.Errorf("marshal yaml for %s: %w", path, err)
@@ -732,13 +732,6 @@ func writeDeploymentTemplate(path string, manifest deploymentManifest, serviceNa
 	}
 	if len(conditionalVolumes) > 0 {
 		rendered = wrapConditionalListHeaders(rendered, conditionalVolumes)
-	}
-	if len(checksums) > 0 {
-		var err error
-		rendered, err = renderConfigChecksums(rendered, checksums)
-		if err != nil {
-			return fmt.Errorf("render config checksum in %s: %w", path, err)
-		}
 	}
 	if !strings.HasSuffix(rendered, "\n") {
 		rendered += "\n"
@@ -842,88 +835,6 @@ func wrapConditionalListHeaders(rendered string, conditionalVolumes []conditiona
 		i += len(block) - 1
 	}
 	return strings.Join(lines, "\n")
-}
-
-func renderConfigChecksums(rendered string, checksums []configChecksum) (string, error) {
-	lines := strings.Split(rendered, "\n")
-	for _, checksum := range checksums {
-		found := false
-		for i, line := range lines {
-			if !strings.Contains(line, checksum.Placeholder) {
-				continue
-			}
-			value := fmt.Sprintf("{{ %s | sha256sum | quote }}", checksumContentExpression(checksum))
-			line = strings.Replace(line, checksum.Placeholder, value, 1)
-			if checksum.EnabledValue == "" {
-				lines[i] = line
-			} else {
-				indent := line[:len(line)-len(strings.TrimLeft(line, " "))]
-				wrapped := []string{
-					indent + "# {{- if " + helmValueExpression(checksum.EnabledValue) + " }}",
-					line,
-					indent + "# {{- end }}",
-				}
-				lines = append(lines[:i], append(wrapped, lines[i+1:]...)...)
-			}
-			found = true
-			break
-		}
-		if !found {
-			return "", fmt.Errorf("placeholder %q was not found", checksum.Placeholder)
-		}
-	}
-
-	allConditional := true
-	conditions := []string{}
-	for _, checksum := range checksums {
-		if checksum.EnabledValue == "" {
-			allConditional = false
-			break
-		}
-		conditions = append(conditions, "("+helmValueExpression(checksum.EnabledValue)+")")
-	}
-	if !allConditional {
-		return strings.Join(lines, "\n"), nil
-	}
-	condition := conditions[0]
-	if len(conditions) > 1 {
-		condition = "or " + strings.Join(conditions, " ")
-	}
-	for i, line := range lines {
-		if strings.TrimSpace(line) != "annotations:" {
-			continue
-		}
-		block := strings.Join(lines[i:], "\n")
-		if !strings.Contains(block, "checksum/") {
-			continue
-		}
-		indentSize := len(line) - len(strings.TrimLeft(line, " "))
-		end := len(lines)
-		for j := i + 1; j < len(lines); j++ {
-			if strings.TrimSpace(lines[j]) == "" {
-				continue
-			}
-			lineIndent := len(lines[j]) - len(strings.TrimLeft(lines[j], " "))
-			if lineIndent <= indentSize {
-				end = j
-				break
-			}
-		}
-		indent := strings.Repeat(" ", indentSize)
-		wrapped := []string{indent + "# {{- if " + condition + " }}"}
-		wrapped = append(wrapped, lines[i:end]...)
-		wrapped = append(wrapped, indent+"# {{- end }}")
-		lines = append(lines[:i], append(wrapped, lines[end:]...)...)
-		return strings.Join(lines, "\n"), nil
-	}
-	return "", fmt.Errorf("annotations block was not found")
-}
-
-func checksumContentExpression(checksum configChecksum) string {
-	if checksum.ContentValue != "" {
-		return helmValueExpression(checksum.ContentValue) + " | toString"
-	}
-	return strconv.Quote(checksum.StaticContent)
 }
 
 // writeSecretTemplate writes a Helm-templated Secret whose value is sourced from
@@ -1439,7 +1350,7 @@ func buildDeployment(
 	secretVariables map[string]secretVariableNames,
 	configs map[string]model.Config,
 	configVariables map[string]configVariableNames,
-) (deploymentManifest, []helmValueReplacement, []conditionalVolume, []configChecksum, error) {
+) (deploymentManifest, []helmValueReplacement, []conditionalVolume, error) {
 	ports := svc.Ports
 	volumes, volumeMounts, helmValues, conditionalVolumes := buildVolumes(appName, svc, secrets, secretVariables, configs, configVariables)
 	resources := &resourceRequirements{
@@ -1473,12 +1384,6 @@ func buildDeployment(
 			podLabels[key] = value
 		}
 	}
-	checksums := buildConfigChecksums(svc, configs)
-	podAnnotations := map[string]string{}
-	for _, checksum := range checksums {
-		podAnnotations[checksum.AnnotationKey] = checksum.Placeholder
-	}
-
 	manifest := deploymentManifest{
 		APIVersion: "apps/v1",
 		Kind:       "Deployment",
@@ -1491,7 +1396,7 @@ func buildDeployment(
 			Replicas: 1,
 			Selector: labelSelector{MatchLabels: serviceSelector(svc.Name)},
 			Template: podTemplateSpec{
-				Metadata: objectMeta{Labels: podLabels, Annotations: podAnnotations},
+				Metadata: objectMeta{Labels: podLabels},
 				Spec: podSpec{
 					Hostname:       svc.Hostname,
 					InitContainers: initContainers,
@@ -1502,7 +1407,7 @@ func buildDeployment(
 		},
 	}
 
-	return manifest, helmValues, conditionalVolumes, checksums, nil
+	return manifest, helmValues, conditionalVolumes, nil
 }
 
 func buildService(appName string, namespace string, svc model.Service) serviceManifest {
@@ -2219,43 +2124,6 @@ func buildVolumes(
 type conditionalVolume struct {
 	Name         string
 	EnabledValue string
-}
-
-type configChecksum struct {
-	AnnotationKey string
-	Placeholder   string
-	EnabledValue  string
-	ContentValue  string
-	StaticContent string
-}
-
-func buildConfigChecksums(svc model.Service, configs map[string]model.Config) []configChecksum {
-	checksums := []configChecksum{}
-	seen := map[string]struct{}{}
-	for _, ref := range svc.Configs {
-		config := configs[ref.Source]
-		if config.Bridge == nil || !config.Bridge.RolloutOnChange {
-			continue
-		}
-		key := config.Name
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		checksum := configChecksum{
-			AnnotationKey: "checksum/" + config.Name,
-			Placeholder:   fmt.Sprintf("__HELM_CONFIG_CHECKSUM_%d__", len(checksums)),
-			StaticContent: config.Content,
-		}
-		if config.Bridge.EnabledValue != nil {
-			checksum.EnabledValue = config.Bridge.EnabledValue.Name
-		}
-		if config.Bridge.ContentValue != nil {
-			checksum.ContentValue = config.Bridge.ContentValue.Name
-		}
-		checksums = append(checksums, checksum)
-	}
-	return checksums
 }
 
 type helmValueReplacement struct {

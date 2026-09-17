@@ -96,9 +96,8 @@ type Config struct {
 // native Compose config. It intentionally lives outside Package so x-uds can
 // remain aligned with the UDS Package custom resource.
 type BridgeConfig struct {
-	EnabledValue    *HelmBoolValue
-	ContentValue    *HelmStringValue
-	RolloutOnChange bool
+	EnabledValue *HelmBoolValue
+	ContentValue *HelmStringValue
 }
 
 type HelmBoolValue struct {

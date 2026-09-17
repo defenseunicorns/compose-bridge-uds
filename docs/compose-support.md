@@ -109,16 +109,15 @@ configs:
       contentValue:
         name: startupScriptContent
         default: ""
-      rolloutOnChange: true
 ```
 
 `enabledValue` creates a public boolean Helm value and conditionally renders the
 ConfigMap, volume, and mount. `contentValue` sources the ConfigMap data from a
-public string Helm value. `rolloutOnChange` adds a checksum of the effective
-content to each consuming Pod template. Declared defaults are written to both
-the chart and Zarf-packaged values files and documented in the generated
-package. When `x-compose-bridge` is absent, static config rendering remains
-unchanged.
+public string Helm value. Declared defaults are written to both the chart and
+Zarf-packaged values files and documented in the generated package. Package-owned
+ConfigMaps carry the `uds.dev/pod-reload: "true"` label so UDS restarts consuming
+Pods when content changes. When `x-compose-bridge` is absent, static config
+rendering remains unchanged.
 
 Every resolved service environment value becomes a non-sensitive Zarf variable named `<SERVICE>_<ENVIRONMENT_VARIABLE>`. The value resolved by `docker compose config`, including an empty value, is retained as its deployment default in `zarf.yaml`.
 

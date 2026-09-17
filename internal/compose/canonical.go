@@ -1468,7 +1468,7 @@ func parseBridgeConfig(raw any, path string) (*model.BridgeConfig, error) {
 	}
 	for key := range extension {
 		switch key {
-		case "enabledValue", "contentValue", "rolloutOnChange":
+		case "enabledValue", "contentValue":
 		default:
 			return nil, fmt.Errorf("invalid %s.%s: unsupported field", path, key)
 		}
@@ -1489,14 +1489,7 @@ func parseBridgeConfig(raw any, path string) (*model.BridgeConfig, error) {
 		}
 		config.ContentValue = parsed
 	}
-	if value, exists := extension["rolloutOnChange"]; exists {
-		rollout, ok := value.(bool)
-		if !ok {
-			return nil, fmt.Errorf("invalid %s.rolloutOnChange: must be a boolean", path)
-		}
-		config.RolloutOnChange = rollout
-	}
-	if config.EnabledValue == nil && config.ContentValue == nil && !config.RolloutOnChange {
+	if config.EnabledValue == nil && config.ContentValue == nil {
 		return nil, nil
 	}
 	return config, nil

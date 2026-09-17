@@ -63,7 +63,6 @@ configs:
           #!/bin/sh
           set -eu
           echo 'compose-bridge startup script default'
-      rolloutOnChange: true
 
 secrets:
   app_secret:
