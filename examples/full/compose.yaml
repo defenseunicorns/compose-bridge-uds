@@ -20,6 +20,9 @@ services:
     configs:
       - source: app_config
         target: /app/config.yml
+      - source: startup-script
+        target: /app/startup.sh
+        mode: 0755
     secrets:
       - source: app_secret
         target: app-secret
@@ -45,6 +48,10 @@ configs:
     content: |
       server:
         greeting: "Hello from config map"
+  startup-script:
+    content: |
+      #!/usr/bin/env sh
+      exit 0
 
 secrets:
   app_secret:

@@ -76,6 +76,7 @@ type VolumeMount struct {
 type FileRef struct {
 	Source string
 	Target string
+	Mode   *int32
 }
 
 type Secret struct {

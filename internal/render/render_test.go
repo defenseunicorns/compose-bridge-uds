@@ -1555,7 +1555,7 @@ configs:
 	}
 
 	configMap := readFile(t, filepath.Join(outDir, "chart", "templates", "configmap-app-config.yaml"))
-	for _, want := range []string{"key: value", `uds.dev/pod-reload: "true"`} {
+	for _, want := range []string{`{{ index .Values.configs "appConfig" | indent 8 }}`, `uds.dev/pod-reload: "true"`} {
 		if !strings.Contains(configMap, want) {
 			t.Fatalf("expected configmap to contain %q\n%s", want, configMap)
 		}
@@ -1587,6 +1587,175 @@ configs:
 	}
 	if strings.Contains(zarfConfig, "manifests:") {
 		t.Fatalf("did not expect manifest-based zarf config\n%s", zarfConfig)
+	}
+}
+
+func TestWritePackageExposesInlineConfigThroughHelmAndZarfAndPreservesMode(t *testing.T) {
+	t.Parallel()
+
+	const defaultContent = "#!/usr/bin/env bash\necho '{{ application.value }}'\necho ${RUNTIME_VALUE}\n"
+	input := []byte(`name: floci
+services:
+  floci:
+    image: floci/floci:2.1.0-compat
+    configs:
+      - source: startup-script
+        target: /etc/localstack/init/ready.d/startup.sh
+        mode: 0755
+configs:
+  startup-script:
+    content: |
+      #!/usr/bin/env bash
+      echo '{{ application.value }}'
+      echo $${RUNTIME_VALUE}
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	if len(app.Services) != 1 || len(app.Services[0].Configs) != 1 || app.Services[0].Configs[0].Mode == nil {
+		t.Fatalf("expected one config reference with a mode, got %#v", app.Services)
+	}
+	if got := *app.Services[0].Configs[0].Mode; got != 0o755 {
+		t.Fatalf("config mode = %#o, want 0755", got)
+	}
+
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	chartValues := readYAMLMap(t, filepath.Join(outDir, "chart", "values.yaml"))
+	configs := mustMap(t, chartValues["configs"])
+	if got := configs["startupScript"]; got != defaultContent {
+		t.Fatalf("configs.startupScript = %#v, want %#v", got, defaultContent)
+	}
+
+	configMap := readFile(t, filepath.Join(outDir, "chart", "templates", "configmap-startup-script.yaml"))
+	for _, want := range []string{
+		`{{ index .Values.configs "startupScript" | indent 8 }}`,
+		`uds.dev/pod-reload: "true"`,
+	} {
+		if !strings.Contains(configMap, want) {
+			t.Fatalf("expected ConfigMap template to contain %q\n%s", want, configMap)
+		}
+	}
+	if strings.Contains(configMap, " tpl ") {
+		t.Fatalf("config content must not be interpreted as a Helm template\n%s", configMap)
+	}
+
+	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-floci.yaml"))
+	for _, want := range []string{
+		"name: config-startup-script-mode-755",
+		"mountPath: /etc/localstack/init/ready.d/startup.sh",
+		"subPath: startup-script",
+		"defaultMode: 493",
+	} {
+		if !strings.Contains(deployment, want) {
+			t.Fatalf("expected Deployment template to contain %q\n%s", want, deployment)
+		}
+	}
+
+	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
+	if !strings.Contains(zarfValues, "configs:\n    startupScript: |-\n        ###ZARF_VAR_STARTUP_SCRIPT###") {
+		t.Fatalf("expected nested Helm value to be wired to STARTUP_SCRIPT\n%s", zarfValues)
+	}
+	zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
+	variables, ok := zarfConfig["variables"].([]any)
+	if !ok {
+		t.Fatalf("expected Zarf variables, got %#v", zarfConfig["variables"])
+	}
+	var startupScript map[string]any
+	for _, raw := range variables {
+		variable := mustMap(t, raw)
+		if variable["name"] == "STARTUP_SCRIPT" {
+			startupScript = variable
+			break
+		}
+	}
+	if startupScript == nil || startupScript["default"] != defaultContent || startupScript["autoIndent"] != true {
+		t.Fatalf("unexpected STARTUP_SCRIPT variable: %#v", startupScript)
+	}
+	if _, exists := startupScript["sensitive"]; exists {
+		t.Fatalf("STARTUP_SCRIPT must not be sensitive: %#v", startupScript)
+	}
+
+	udsPath, err := exec.LookPath("uds")
+	if err != nil {
+		t.Skip("uds CLI is required for Helm rendering assertions")
+	}
+	overrideContent := "#!/usr/bin/env bash\nawslocal s3 mb s3://argo-workflows\necho '{{ still.literal }}'\n"
+	valuesPath := filepath.Join(t.TempDir(), "values.yaml")
+	valuesYAML, err := yamlv3.Marshal(map[string]any{"configs": map[string]any{"startupScript": overrideContent}})
+	if err != nil {
+		t.Fatalf("marshal Helm override: %v", err)
+	}
+	if err := os.WriteFile(valuesPath, valuesYAML, 0o644); err != nil {
+		t.Fatalf("write Helm override: %v", err)
+	}
+	rendered, err := exec.Command(udsPath, "zarf", "tools", "helm", "template", "floci", filepath.Join(outDir, "chart"), "--values", valuesPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("helm template override: %v\n%s", err, rendered)
+	}
+	renderedConfigMap := findYAMLDocumentByKind(t, rendered, "ConfigMap")
+	if got := mustMap(t, renderedConfigMap["data"])["startup-script"]; got != strings.TrimSuffix(overrideContent, "\n") {
+		t.Fatalf("rendered startup script = %#v, want override content", got)
+	}
+}
+
+func TestWritePackageRejectsInlineConfigVariableAndHelmKeyCollisions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name: "zarf variable",
+			input: `name: demo
+services:
+  app:
+    image: example/app
+    configs:
+      - source: domain
+configs:
+  domain:
+    content: example
+`,
+			want: `generates Zarf variable "DOMAIN"`,
+		},
+		{
+			name: "helm value",
+			input: `name: demo
+services:
+  app:
+    image: example/app
+    configs:
+      - source: app-config
+      - source: app.config
+configs:
+  app-config:
+    content: one
+  app.config:
+    content: two
+`,
+			want: "generate the same Helm value configs.appConfig",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app, err := compose.LoadCanonicalYAML([]byte(tt.input))
+			if err != nil {
+				t.Fatalf("LoadCanonicalYAML() error = %v", err)
+			}
+			err = render.WritePackage(t.TempDir(), app)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("WritePackage() error = %v, want substring %q", err, tt.want)
+			}
+		})
 	}
 }
 
