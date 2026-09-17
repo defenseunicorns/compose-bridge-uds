@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -2077,6 +2078,7 @@ func buildVolumes(
 	helmValues := []helmValueReplacement{}
 	conditionalVolumes := []conditionalVolume{}
 	volumeNames := map[string]string{}
+	configVolumeIndexes := map[string]int{}
 
 	for _, mount := range svc.Volumes {
 		volumeKey := "volume:" + mount.Name
@@ -2146,6 +2148,8 @@ func buildVolumes(
 		if ref.Mode != nil {
 			volumeKey += fmt.Sprintf(":mode:%o", *ref.Mode)
 		}
+		config := configs[ref.Source]
+		itemPath := composeConfigDataKey(ref, config)
 		volumeName, exists := volumeNames[volumeKey]
 		if !exists {
 			volumeName = sanitizeDNSLabelName("config-" + ref.Source)
@@ -2153,9 +2157,7 @@ func buildVolumes(
 				volumeName = sanitizeDNSLabelName(fmt.Sprintf("config-%s-mode-%o", ref.Source, *ref.Mode))
 			}
 			volumeNames[volumeKey] = volumeName
-			config := configs[ref.Source]
 			configMapName := composeConfigMapName(appName, config)
-			itemPath := composeConfigDataKey(ref, config)
 			configMapKey := itemPath
 			if config, external := configs[ref.Source]; external && config.External {
 				variable := configVariables[ref.Source]
@@ -2184,14 +2186,24 @@ func buildVolumes(
 					DefaultMode: ref.Mode,
 				},
 			})
+			configVolumeIndexes[volumeKey] = len(volumes) - 1
 			if config.Bridge != nil && config.Bridge.EnabledValue != nil {
 				conditionalVolumes = append(conditionalVolumes, conditionalVolume{
 					Name:         volumeName,
 					EnabledValue: config.Bridge.EnabledValue.Name,
 				})
 			}
+		} else {
+			volume := &volumes[configVolumeIndexes[volumeKey]]
+			configMapKey := itemPath
+			if config.External {
+				configMapKey = volume.ConfigMap.Items[0].Key
+			}
+			item := keyToPath{Key: configMapKey, Path: itemPath}
+			if !slices.Contains(volume.ConfigMap.Items, item) {
+				volume.ConfigMap.Items = append(volume.ConfigMap.Items, item)
+			}
 		}
-		config := configs[ref.Source]
 		configMapKey := composeConfigDataKey(ref, config)
 		mounts = append(mounts, volumeMountSpec{
 			Name:      volumeName,

@@ -1731,12 +1731,24 @@ configs:
 	podTemplateA := mustMap(t, mustMap(t, deploymentA["spec"])["template"])
 	podSpecA := mustMap(t, podTemplateA["spec"])
 	volume := mustMap(t, podSpecA["volumes"].([]any)[0])
-	if got := mustMap(t, volume["configMap"])["defaultMode"]; got != 493 {
+	configMapVolume := mustMap(t, volume["configMap"])
+	if got := configMapVolume["defaultMode"]; got != 493 {
 		t.Fatalf("defaultMode = %#v, want 493 (0755)", got)
+	}
+	items := configMapVolume["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("projected items = %#v, want one item", items)
+	}
+	item := mustMap(t, items[0])
+	if item["key"] != "startup.sh" || item["path"] != "startup.sh" {
+		t.Fatalf("unexpected projected item: %#v", item)
 	}
 	mount := mustMap(t, mustMap(t, podSpecA["containers"].([]any)[0])["volumeMounts"].([]any)[0])
 	if mount["mountPath"] != "/etc/localstack/init/ready.d/startup.sh" || mount["subPath"] != "startup.sh" {
 		t.Fatalf("native Compose target was not preserved: %#v", mount)
+	}
+	if mount["subPath"] != item["path"] {
+		t.Fatalf("mount subPath is not projected by the volume: mount=%#v item=%#v", mount, item)
 	}
 	annotationsA := mustMap(t, mustMap(t, podTemplateA["metadata"])["annotations"])
 	wantChecksumA := fmt.Sprintf("%x", sha256.Sum256([]byte(contentA)))
@@ -1751,6 +1763,135 @@ configs:
 	annotationsB := mustMap(t, mustMap(t, podTemplateB["metadata"])["annotations"])
 	if annotationsA["checksum/startup-script"] == annotationsB["checksum/startup-script"] {
 		t.Fatalf("changing startupScriptContent did not change the Pod-template checksum")
+	}
+}
+
+func TestWritePackageHelmConfigurableComposeConfigMountedTwice(t *testing.T) {
+	input := []byte(`name: example
+services:
+  app:
+    image: example/app
+    configs:
+      - source: startup-script
+        target: /etc/example/ready.d/startup.sh
+        mode: 0755
+      - source: startup-script
+        target: /opt/example/hooks/initialize.sh
+        mode: 0755
+configs:
+  startup-script:
+    content: ""
+    x-compose-bridge:
+      enabledValue:
+        name: enableStartupScripts
+        default: false
+      contentValue:
+        name: startupScriptContent
+        default: ""
+      rolloutOnChange: true
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+	chartDir := filepath.Join(outDir, "chart")
+	configMapTemplate := readFile(t, filepath.Join(chartDir, "templates", "configmap-startup-script.yaml"))
+	for _, key := range []string{"startup.sh:", "initialize.sh:"} {
+		if strings.Count(configMapTemplate, key) != 1 {
+			t.Fatalf("expected ConfigMap key %q exactly once\n%s", key, configMapTemplate)
+		}
+	}
+	deploymentTemplate := readFile(t, filepath.Join(chartDir, "templates", "deployment-app.yaml"))
+	for _, key := range []string{"startup.sh", "initialize.sh"} {
+		if strings.Count(deploymentTemplate, "key: "+key) != 1 || strings.Count(deploymentTemplate, "path: "+key) != 1 {
+			t.Fatalf("expected projected item %q exactly once\n%s", key, deploymentTemplate)
+		}
+		if strings.Count(deploymentTemplate, "subPath: "+key) != 1 {
+			t.Fatalf("expected mount subPath %q exactly once\n%s", key, deploymentTemplate)
+		}
+	}
+
+	udsPath, err := exec.LookPath("uds")
+	if err != nil {
+		t.Log("uds not installed; generated-template assertions completed")
+		return
+	}
+	overrides, err := yamlv3.Marshal(map[string]any{
+		"enableStartupScripts": true,
+		"startupScriptContent": "#!/bin/sh\necho ready\n",
+	})
+	if err != nil {
+		t.Fatalf("marshal Helm overrides: %v", err)
+	}
+	valuesPath := filepath.Join(t.TempDir(), "values.yaml")
+	if err := os.WriteFile(valuesPath, overrides, 0o644); err != nil {
+		t.Fatalf("write Helm overrides: %v", err)
+	}
+	rendered, err := exec.Command(udsPath, "zarf", "tools", "helm", "template", "example", chartDir, "--values", valuesPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("helm template generated chart: %v\n%s", err, rendered)
+	}
+
+	configMap := findYAMLDocumentByKind(t, rendered, "ConfigMap")
+	data := mustMap(t, configMap["data"])
+	for _, key := range []string{"startup.sh", "initialize.sh"} {
+		if _, exists := data[key]; !exists {
+			t.Fatalf("rendered ConfigMap is missing key %q: %#v", key, data)
+		}
+	}
+
+	deployment := findYAMLDocumentByKind(t, rendered, "Deployment")
+	podSpec := mustMap(t, mustMap(t, mustMap(t, deployment["spec"])["template"])["spec"])
+	var projectedKeys map[string]struct{}
+	matchingVolumes := 0
+	for _, value := range podSpec["volumes"].([]any) {
+		volume := mustMap(t, value)
+		if volume["name"] != "config-startup-script-mode-755" {
+			continue
+		}
+		matchingVolumes++
+		projectedKeys = map[string]struct{}{}
+		items := mustMap(t, volume["configMap"])["items"].([]any)
+		if len(items) != 2 {
+			t.Fatalf("projected items = %#v, want two unique items", items)
+		}
+		for _, itemValue := range items {
+			item := mustMap(t, itemValue)
+			key := item["key"].(string)
+			path := item["path"].(string)
+			if key != path {
+				t.Fatalf("projected item key/path mismatch: %#v", item)
+			}
+			if _, duplicate := projectedKeys[key]; duplicate {
+				t.Fatalf("duplicate projected item %q: %#v", key, items)
+			}
+			projectedKeys[key] = struct{}{}
+		}
+	}
+	if matchingVolumes != 1 {
+		t.Fatalf("matching shared volumes = %d, want 1", matchingVolumes)
+	}
+
+	mounts := mustMap(t, podSpec["containers"].([]any)[0])["volumeMounts"].([]any)
+	matchingMounts := 0
+	for _, mountValue := range mounts {
+		mount := mustMap(t, mountValue)
+		if mount["name"] != "config-startup-script-mode-755" {
+			continue
+		}
+		matchingMounts++
+		subPath := mount["subPath"].(string)
+		if _, exists := projectedKeys[subPath]; !exists {
+			t.Fatalf("mount subPath %q is not projected by the shared volume: %#v", subPath, projectedKeys)
+		}
+	}
+	if matchingMounts != 2 {
+		t.Fatalf("matching volume mounts = %d, want 2", matchingMounts)
 	}
 }
 
