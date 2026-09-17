@@ -20,6 +20,9 @@ services:
     configs:
       - source: app_config
         target: /app/config.yml
+      - source: startup_script
+        target: /app/startup.d/startup.sh
+        mode: 0755
     secrets:
       - source: app_secret
         target: app-secret
@@ -45,6 +48,22 @@ configs:
     content: |
       server:
         greeting: "Hello from config map"
+  startup_script:
+    content: |
+      #!/bin/sh
+      set -eu
+      echo 'compose-bridge startup script default'
+    x-compose-bridge:
+      enabledValue:
+        name: enableStartupScripts
+        default: false
+      contentValue:
+        name: startupScriptContent
+        default: |
+          #!/bin/sh
+          set -eu
+          echo 'compose-bridge startup script default'
+      rolloutOnChange: true
 
 secrets:
   app_secret:
@@ -64,4 +83,4 @@ x-uds:
     #     key: ca-bundle.pem
     #     labels:
     #       uds.dev/pod-reload: "true"
-    # sso: []
+    sso: []

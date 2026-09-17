@@ -76,6 +76,7 @@ type VolumeMount struct {
 type FileRef struct {
 	Source string
 	Target string
+	Mode   *int32
 }
 
 type Secret struct {
@@ -88,6 +89,26 @@ type Config struct {
 	ExternalName string
 	External     bool
 	Content      string
+	Bridge       *BridgeConfig
+}
+
+// BridgeConfig contains Compose Bridge-specific Helm rendering controls for a
+// native Compose config. It intentionally lives outside Package so x-uds can
+// remain aligned with the UDS Package custom resource.
+type BridgeConfig struct {
+	EnabledValue    *HelmBoolValue
+	ContentValue    *HelmStringValue
+	RolloutOnChange bool
+}
+
+type HelmBoolValue struct {
+	Name    string
+	Default bool
+}
+
+type HelmStringValue struct {
+	Name    string
+	Default string
 }
 
 type Dependency struct {

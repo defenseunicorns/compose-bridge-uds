@@ -87,6 +87,39 @@ reference. External ConfigMaps are mounted with
 the external ConfigMap's owner must apply the `uds.dev/pod-reload: "true"`
 label; otherwise perform a rollout after changing it.
 
+Config mounts preserve the native Compose `target` and an explicitly declared
+`mode`. Package-owned configs can also declare `x-compose-bridge` rendering
+controls without adding bridge-only fields to `x-uds`:
+
+```yaml
+services:
+  app:
+    configs:
+      - source: startup-script
+        target: /opt/app/init/startup.sh
+        mode: 0755
+
+configs:
+  startup-script:
+    content: ""
+    x-compose-bridge:
+      enabledValue:
+        name: enableStartupScripts
+        default: false
+      contentValue:
+        name: startupScriptContent
+        default: ""
+      rolloutOnChange: true
+```
+
+`enabledValue` creates a public boolean Helm value and conditionally renders the
+ConfigMap, volume, and mount. `contentValue` sources the ConfigMap data from a
+public string Helm value. `rolloutOnChange` adds a checksum of the effective
+content to each consuming Pod template. Declared defaults are written to both
+the chart and Zarf-packaged values files and documented in the generated
+package. When `x-compose-bridge` is absent, static config rendering remains
+unchanged.
+
 Every resolved service environment value becomes a non-sensitive Zarf variable named `<SERVICE>_<ENVIRONMENT_VARIABLE>`. The value resolved by `docker compose config`, including an empty value, is retained as its deployment default in `zarf.yaml`.
 
 The bridge renders one `<service>-environment` ConfigMap for each service with environment values and attaches it to that service through `envFrom`. Empty environment ConfigMaps are omitted. Package-owned environment and Compose configuration ConfigMaps carry the `uds.dev/pod-reload: "true"` label so UDS can restart dependent Pods when their data changes. The bridge cannot add that label to external ConfigMaps. Direct Helm deployments do not provide UDS reload behavior.

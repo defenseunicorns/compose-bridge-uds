@@ -29,6 +29,11 @@ Package-owned secrets are rendered from chart values rather than baked into temp
 
 Use `x-uds` [Compose extension keys](https://docs.docker.com/reference/compose-file/extension/) only when inferred behavior needs to be overridden.
 
+`x-uds` remains limited to fields represented by the UDS `Package` custom
+resource. Helm-specific config rendering uses the separate
+`configs.<name>.x-compose-bridge` extension described in
+[Compose support](compose-support.md).
+
 | Key | Purpose |
 |---|---|
 | `x-uds.metadata.name` | Package name and Zarf default namespace (default: Compose project name). |

@@ -2,6 +2,7 @@ package render_test
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -1587,6 +1588,240 @@ configs:
 	}
 	if strings.Contains(zarfConfig, "manifests:") {
 		t.Fatalf("did not expect manifest-based zarf config\n%s", zarfConfig)
+	}
+}
+
+func TestWritePackageHelmConfigurableComposeConfig(t *testing.T) {
+	input := []byte(`name: floci
+services:
+  floci:
+    image: floci/floci:2.1.0-compat
+    configs:
+      - source: startup-script
+        target: /etc/localstack/init/ready.d/startup.sh
+        mode: 0755
+configs:
+  startup-script:
+    content: ""
+    x-compose-bridge:
+      enabledValue:
+        name: enableStartupScripts
+        default: false
+      contentValue:
+        name: startupScriptContent
+        default: ""
+      rolloutOnChange: true
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	ref := app.Services[0].Configs[0]
+	if ref.Mode == nil || *ref.Mode != 0o755 {
+		t.Fatalf("config mode = %#v, want 0755", ref.Mode)
+	}
+	bridge := app.Configs["startup-script"].Bridge
+	if bridge == nil || bridge.EnabledValue == nil || bridge.ContentValue == nil || !bridge.RolloutOnChange {
+		t.Fatalf("bridge config was not preserved: %#v", bridge)
+	}
+
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+	chartDir := filepath.Join(outDir, "chart")
+	chartValues := readYAMLMap(t, filepath.Join(chartDir, "values.yaml"))
+	if got := chartValues["enableStartupScripts"]; got != false {
+		t.Fatalf("enableStartupScripts default = %#v, want false", got)
+	}
+	if got := chartValues["startupScriptContent"]; got != "" {
+		t.Fatalf("startupScriptContent default = %#v, want empty string", got)
+	}
+	zarfValues := readYAMLMap(t, filepath.Join(outDir, "values", "values.yaml"))
+	if zarfValues["enableStartupScripts"] != false || zarfValues["startupScriptContent"] != "" {
+		t.Fatalf("Zarf-packaged chart values do not preserve bridge defaults: %#v", zarfValues)
+	}
+
+	configMapTemplate := readFile(t, filepath.Join(chartDir, "templates", "configmap-startup-script.yaml"))
+	for _, want := range []string{
+		`{{- if index .Values "enableStartupScripts" }}`,
+		"name: floci-startup-script",
+		"startup.sh:",
+		`index .Values "startupScriptContent" | toString | quote`,
+	} {
+		if !strings.Contains(configMapTemplate, want) {
+			t.Fatalf("expected configurable ConfigMap template to contain %q\n%s", want, configMapTemplate)
+		}
+	}
+	deploymentTemplate := readFile(t, filepath.Join(chartDir, "templates", "deployment-floci.yaml"))
+	for _, want := range []string{
+		`if index .Values "enableStartupScripts"`,
+		`index .Values "startupScriptContent" | toString | sha256sum | quote`,
+		"checksum/startup-script:",
+		"defaultMode: 493",
+		"mountPath: /etc/localstack/init/ready.d/startup.sh",
+		"subPath: startup.sh",
+	} {
+		if !strings.Contains(deploymentTemplate, want) {
+			t.Fatalf("expected configurable Deployment template to contain %q\n%s", want, deploymentTemplate)
+		}
+	}
+	configuration := readFile(t, filepath.Join(outDir, "docs", "configuration.md"))
+	for _, want := range []string{"## Helm values", "`enableStartupScripts`", "`startupScriptContent`"} {
+		if !strings.Contains(configuration, want) {
+			t.Fatalf("expected generated configuration docs to contain %q\n%s", want, configuration)
+		}
+	}
+
+	udsPath, err := exec.LookPath("uds")
+	if err != nil {
+		t.Log("uds not installed; generated-template assertions completed")
+		return
+	}
+	if output, err := exec.Command(udsPath, "zarf", "tools", "helm", "lint", chartDir).CombinedOutput(); err != nil {
+		t.Fatalf("helm lint generated chart: %v\n%s", err, output)
+	}
+	renderChart := func(t *testing.T, enabled bool, content string) []byte {
+		t.Helper()
+		overrides, err := yamlv3.Marshal(map[string]any{
+			"enableStartupScripts": enabled,
+			"startupScriptContent": content,
+		})
+		if err != nil {
+			t.Fatalf("marshal Helm overrides: %v", err)
+		}
+		valuesPath := filepath.Join(t.TempDir(), "values.yaml")
+		if err := os.WriteFile(valuesPath, overrides, 0o644); err != nil {
+			t.Fatalf("write Helm overrides: %v", err)
+		}
+		output, err := exec.Command(udsPath, "zarf", "tools", "helm", "template", "floci", chartDir, "--values", valuesPath).CombinedOutput()
+		if err != nil {
+			t.Fatalf("helm template generated chart: %v\n%s", err, output)
+		}
+		return output
+	}
+
+	disabled := renderChart(t, false, "ignored")
+	if bytes.Contains(disabled, []byte("kind: ConfigMap")) || bytes.Contains(disabled, []byte("config-floci-startup-script")) {
+		t.Fatalf("disabled config rendered a ConfigMap, volume, or mount\n%s", disabled)
+	}
+	disabledDeployment := findYAMLDocumentByKind(t, disabled, "Deployment")
+	disabledPodTemplate := mustMap(t, mustMap(t, disabledDeployment["spec"])["template"])
+	disabledTemplateMetadata := mustMap(t, disabledPodTemplate["metadata"])
+	if _, exists := disabledTemplateMetadata["annotations"]; exists {
+		t.Fatalf("disabled config rendered checksum annotations: %#v", disabledTemplateMetadata)
+	}
+	disabledPodSpec := mustMap(t, disabledPodTemplate["spec"])
+	if _, exists := disabledPodSpec["volumes"]; exists {
+		t.Fatalf("disabled config rendered volumes: %#v", disabledPodSpec["volumes"])
+	}
+	disabledContainer := mustMap(t, disabledPodSpec["containers"].([]any)[0])
+	if _, exists := disabledContainer["volumeMounts"]; exists {
+		t.Fatalf("disabled config rendered volume mounts: %#v", disabledContainer["volumeMounts"])
+	}
+
+	contentA := "#!/usr/bin/env bash\nawslocal s3 mb s3://argo-workflows\n"
+	enabledA := renderChart(t, true, contentA)
+	configMap := findYAMLDocumentByKind(t, enabledA, "ConfigMap")
+	if mustMap(t, configMap["metadata"])["name"] != "floci-startup-script" || mustMap(t, configMap["data"])["startup.sh"] != contentA {
+		t.Fatalf("unexpected rendered startup ConfigMap: %#v", configMap)
+	}
+	deploymentA := findYAMLDocumentByKind(t, enabledA, "Deployment")
+	podTemplateA := mustMap(t, mustMap(t, deploymentA["spec"])["template"])
+	podSpecA := mustMap(t, podTemplateA["spec"])
+	volume := mustMap(t, podSpecA["volumes"].([]any)[0])
+	if got := mustMap(t, volume["configMap"])["defaultMode"]; got != 493 {
+		t.Fatalf("defaultMode = %#v, want 493 (0755)", got)
+	}
+	mount := mustMap(t, mustMap(t, podSpecA["containers"].([]any)[0])["volumeMounts"].([]any)[0])
+	if mount["mountPath"] != "/etc/localstack/init/ready.d/startup.sh" || mount["subPath"] != "startup.sh" {
+		t.Fatalf("native Compose target was not preserved: %#v", mount)
+	}
+	annotationsA := mustMap(t, mustMap(t, podTemplateA["metadata"])["annotations"])
+	wantChecksumA := fmt.Sprintf("%x", sha256.Sum256([]byte(contentA)))
+	if annotationsA["checksum/startup-script"] != wantChecksumA {
+		t.Fatalf("checksum = %#v, want %q", annotationsA["checksum/startup-script"], wantChecksumA)
+	}
+
+	contentB := contentA + "awslocal iam create-role --role-name argo-server --assume-role-policy-document '{}'\n"
+	enabledB := renderChart(t, true, contentB)
+	deploymentB := findYAMLDocumentByKind(t, enabledB, "Deployment")
+	podTemplateB := mustMap(t, mustMap(t, deploymentB["spec"])["template"])
+	annotationsB := mustMap(t, mustMap(t, podTemplateB["metadata"])["annotations"])
+	if annotationsA["checksum/startup-script"] == annotationsB["checksum/startup-script"] {
+		t.Fatalf("changing startupScriptContent did not change the Pod-template checksum")
+	}
+}
+
+func TestLoadCanonicalRejectsInvalidComposeBridgeConfigControls(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     string
+		serviceRef string
+		want       string
+	}{
+		{
+			name: "content default type",
+			config: `content: ""
+    x-compose-bridge:
+      contentValue:
+        name: startupScriptContent
+        default: false`,
+			want: "configs.startup-script.x-compose-bridge.contentValue.default: must be a string",
+		},
+		{
+			name: "duplicate public value",
+			config: `content: ""
+    x-compose-bridge:
+      enabledValue:
+        name: startupConfig
+      contentValue:
+        name: startupConfig`,
+			want: `Helm value "startupConfig" conflicts with Compose config "startup-script"`,
+		},
+		{
+			name: "reserved public value",
+			config: `content: ""
+    x-compose-bridge:
+      contentValue:
+        name: resources`,
+			want: `Helm value "resources" conflicts with generated resource configuration`,
+		},
+		{
+			name: "external config",
+			config: `external: true
+    x-compose-bridge:
+      enabledValue:
+        name: enableStartupScripts`,
+			want: "external configs cannot use chart-owned rendering controls",
+		},
+		{
+			name:       "mode outside Kubernetes range",
+			config:     `content: ""`,
+			serviceRef: "\n        mode: 01000",
+			want:       "must be between 0000 and 0777",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := []byte(`name: demo
+services:
+  app:
+    image: ghcr.io/acme/app:1.0.0
+    configs:
+      - source: startup-script
+        target: /opt/app/startup.sh` + tt.serviceRef + `
+configs:
+  startup-script:
+    ` + tt.config + `
+`)
+			_, err := compose.LoadCanonicalYAML(input)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("LoadCanonicalYAML() error = %v, want error containing %q", err, tt.want)
+			}
+		})
 	}
 }
 

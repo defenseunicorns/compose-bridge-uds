@@ -250,16 +250,11 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 		if config.External {
 			continue
 		}
-		if err := writeYAMLFile(filepath.Join(templatesDir, fmt.Sprintf("configmap-%s.yaml", config.Name)), configMapManifest{
-			APIVersion: "v1",
-			Kind:       "ConfigMap",
-			Metadata: objectMeta{
-				Name:      config.Name,
-				Namespace: helmReleaseNamespace,
-				Labels:    reloadableAppLabels(app.Package.Name, config.Name),
-			},
-			Data: map[string]string{config.Name: config.Content},
-		}); err != nil {
+		if err := writeComposeConfigMapTemplate(
+			filepath.Join(templatesDir, fmt.Sprintf("configmap-%s.yaml", config.Name)),
+			app,
+			config,
+		); err != nil {
 			return err
 		}
 	}
@@ -292,7 +287,7 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 	}
 
 	for _, svc := range app.Services {
-		deployment, helmValues, err := buildDeployment(
+		deployment, helmValues, conditionalVolumes, checksums, err := buildDeployment(
 			app.Package.Name,
 			helmReleaseNamespace,
 			svc,
@@ -306,7 +301,7 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 		if err != nil {
 			return err
 		}
-		if err := writeDeploymentTemplate(filepath.Join(templatesDir, fmt.Sprintf("deployment-%s.yaml", svc.Name)), deployment, svc.Name, helmValues); err != nil {
+		if err := writeDeploymentTemplate(filepath.Join(templatesDir, fmt.Sprintf("deployment-%s.yaml", svc.Name)), deployment, svc.Name, helmValues, conditionalVolumes, checksums); err != nil {
 			return err
 		}
 		if err := writeYAMLFile(filepath.Join(templatesDir, fmt.Sprintf("service-%s.yaml", svc.Name)), buildService(app.Package.Name, helmReleaseNamespace, svc)); err != nil {
@@ -450,6 +445,17 @@ func buildConfigurationDocumentation(app model.App, secretVariables map[string]s
 				item.Value,
 				false,
 			)
+		}
+	}
+
+	bridgeValues := buildBridgeHelmValues(app.Configs)
+	if len(bridgeValues) > 0 {
+		content.WriteString("\n## Helm values\n\n")
+		content.WriteString("These public chart values control Compose configs declared with `x-compose-bridge`.\n\n")
+		content.WriteString("| Value | Description | Default |\n")
+		content.WriteString("|---|---|---|\n")
+		for _, value := range bridgeValues {
+			fmt.Fprintf(&content, "| `%s` | %s | `%s` |\n", markdownTableValue(value.Name), markdownTableValue(value.Description), markdownTableValue(fmt.Sprint(value.Default)))
 		}
 	}
 
@@ -634,7 +640,7 @@ func sortedStringSet(values map[string]struct{}) []string {
 
 // writeDeploymentTemplate replaces the generated resource sentinel with a Helm
 // block that emits only resource quantities supplied for this service.
-func writeDeploymentTemplate(path string, manifest deploymentManifest, serviceName string, helmValues []helmValueReplacement) error {
+func writeDeploymentTemplate(path string, manifest deploymentManifest, serviceName string, helmValues []helmValueReplacement, conditionalVolumes []conditionalVolume, checksums []configChecksum) error {
 	marshaled, err := yamlv3.Marshal(manifest)
 	if err != nil {
 		return fmt.Errorf("marshal yaml for %s: %w", path, err)
@@ -716,7 +722,207 @@ func writeDeploymentTemplate(path string, manifest deploymentManifest, serviceNa
 		}
 		rendered = strings.Replace(rendered, value.Placeholder, value.Template, 1)
 	}
+	for _, volume := range conditionalVolumes {
+		var err error
+		rendered, err = wrapNamedYAMLListItems(rendered, volume.Name, helmValueExpression(volume.EnabledValue))
+		if err != nil {
+			return fmt.Errorf("render conditional config volume in %s: %w", path, err)
+		}
+	}
+	if len(conditionalVolumes) > 0 {
+		rendered = wrapConditionalListHeaders(rendered, conditionalVolumes)
+	}
+	if len(checksums) > 0 {
+		var err error
+		rendered, err = renderConfigChecksums(rendered, checksums)
+		if err != nil {
+			return fmt.Errorf("render config checksum in %s: %w", path, err)
+		}
+	}
+	if !strings.HasSuffix(rendered, "\n") {
+		rendered += "\n"
+	}
 	return writeRenderedFile(path, rendered)
+}
+
+func wrapNamedYAMLListItems(rendered, name, condition string) (string, error) {
+	lines := strings.Split(rendered, "\n")
+	out := make([]string, 0, len(lines)+4)
+	matched := 0
+	for i := 0; i < len(lines); {
+		line := lines[i]
+		if strings.TrimSpace(line) != "- name: "+name {
+			out = append(out, line)
+			i++
+			continue
+		}
+		indentSize := len(line) - len(strings.TrimLeft(line, " "))
+		end := len(lines)
+		for j := i + 1; j < len(lines); j++ {
+			if strings.TrimSpace(lines[j]) == "" {
+				continue
+			}
+			lineIndent := len(lines[j]) - len(strings.TrimLeft(lines[j], " "))
+			if lineIndent <= indentSize {
+				end = j
+				break
+			}
+		}
+		indent := strings.Repeat(" ", indentSize)
+		out = append(out, indent+"# {{- if "+condition+" }}")
+		out = append(out, lines[i:end]...)
+		out = append(out, indent+"# {{- end }}")
+		matched++
+		i = end
+	}
+	if matched == 0 {
+		return "", fmt.Errorf("volume %q was not found", name)
+	}
+	return strings.Join(out, "\n"), nil
+}
+
+func wrapConditionalListHeaders(rendered string, conditionalVolumes []conditionalVolume) string {
+	conditionsByName := map[string]string{}
+	for _, volume := range conditionalVolumes {
+		conditionsByName[volume.Name] = helmValueExpression(volume.EnabledValue)
+	}
+	lines := strings.Split(rendered, "\n")
+	for i := 0; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed != "volumeMounts:" && trimmed != "volumes:" {
+			continue
+		}
+		indentSize := len(lines[i]) - len(strings.TrimLeft(lines[i], " "))
+		end := len(lines)
+		for j := i + 1; j < len(lines); j++ {
+			if strings.TrimSpace(lines[j]) == "" {
+				continue
+			}
+			lineIndent := len(lines[j]) - len(strings.TrimLeft(lines[j], " "))
+			if lineIndent <= indentSize {
+				end = j
+				break
+			}
+		}
+		conditions := map[string]struct{}{}
+		hasItem := false
+		allConditional := true
+		for _, line := range lines[i+1 : end] {
+			item := strings.TrimSpace(line)
+			if !strings.HasPrefix(item, "- name: ") {
+				continue
+			}
+			hasItem = true
+			name := strings.TrimPrefix(item, "- name: ")
+			condition, exists := conditionsByName[name]
+			if !exists {
+				allConditional = false
+				break
+			}
+			conditions[condition] = struct{}{}
+		}
+		if !hasItem || !allConditional {
+			continue
+		}
+		conditionList := sortedStringSet(conditions)
+		condition := "(" + conditionList[0] + ")"
+		if len(conditionList) > 1 {
+			wrapped := make([]string, 0, len(conditionList))
+			for _, item := range conditionList {
+				wrapped = append(wrapped, "("+item+")")
+			}
+			condition = "or " + strings.Join(wrapped, " ")
+		}
+		indent := strings.Repeat(" ", indentSize)
+		block := []string{indent + "# {{- if " + condition + " }}"}
+		block = append(block, lines[i:end]...)
+		block = append(block, indent+"# {{- end }}")
+		lines = append(lines[:i], append(block, lines[end:]...)...)
+		i += len(block) - 1
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderConfigChecksums(rendered string, checksums []configChecksum) (string, error) {
+	lines := strings.Split(rendered, "\n")
+	for _, checksum := range checksums {
+		found := false
+		for i, line := range lines {
+			if !strings.Contains(line, checksum.Placeholder) {
+				continue
+			}
+			value := fmt.Sprintf("{{ %s | sha256sum | quote }}", checksumContentExpression(checksum))
+			line = strings.Replace(line, checksum.Placeholder, value, 1)
+			if checksum.EnabledValue == "" {
+				lines[i] = line
+			} else {
+				indent := line[:len(line)-len(strings.TrimLeft(line, " "))]
+				wrapped := []string{
+					indent + "# {{- if " + helmValueExpression(checksum.EnabledValue) + " }}",
+					line,
+					indent + "# {{- end }}",
+				}
+				lines = append(lines[:i], append(wrapped, lines[i+1:]...)...)
+			}
+			found = true
+			break
+		}
+		if !found {
+			return "", fmt.Errorf("placeholder %q was not found", checksum.Placeholder)
+		}
+	}
+
+	allConditional := true
+	conditions := []string{}
+	for _, checksum := range checksums {
+		if checksum.EnabledValue == "" {
+			allConditional = false
+			break
+		}
+		conditions = append(conditions, "("+helmValueExpression(checksum.EnabledValue)+")")
+	}
+	if !allConditional {
+		return strings.Join(lines, "\n"), nil
+	}
+	condition := conditions[0]
+	if len(conditions) > 1 {
+		condition = "or " + strings.Join(conditions, " ")
+	}
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "annotations:" {
+			continue
+		}
+		block := strings.Join(lines[i:], "\n")
+		if !strings.Contains(block, "checksum/") {
+			continue
+		}
+		indentSize := len(line) - len(strings.TrimLeft(line, " "))
+		end := len(lines)
+		for j := i + 1; j < len(lines); j++ {
+			if strings.TrimSpace(lines[j]) == "" {
+				continue
+			}
+			lineIndent := len(lines[j]) - len(strings.TrimLeft(lines[j], " "))
+			if lineIndent <= indentSize {
+				end = j
+				break
+			}
+		}
+		indent := strings.Repeat(" ", indentSize)
+		wrapped := []string{indent + "# {{- if " + condition + " }}"}
+		wrapped = append(wrapped, lines[i:end]...)
+		wrapped = append(wrapped, indent+"# {{- end }}")
+		lines = append(lines[:i], append(wrapped, lines[end:]...)...)
+		return strings.Join(lines, "\n"), nil
+	}
+	return "", fmt.Errorf("annotations block was not found")
+}
+
+func checksumContentExpression(checksum configChecksum) string {
+	if checksum.ContentValue != "" {
+		return helmValueExpression(checksum.ContentValue) + " | toString"
+	}
+	return strconv.Quote(checksum.StaticContent)
 }
 
 // writeSecretTemplate writes a Helm-templated Secret whose value is sourced from
@@ -779,6 +985,98 @@ func writeEnvironmentConfigMapTemplate(path string, app model.App, svc model.Ser
 	return writeRenderedFile(path, rendered)
 }
 
+// writeComposeConfigMapTemplate preserves the native Compose config content for
+// ordinary configs and substitutes the declared public Helm value for configs
+// carrying x-compose-bridge rendering controls.
+func writeComposeConfigMapTemplate(path string, app model.App, config model.Config) error {
+	data := map[string]string{}
+	contentPlaceholders := map[string]string{}
+	for i, key := range composeConfigDataKeys(app.Services, config) {
+		if config.Bridge != nil && config.Bridge.ContentValue != nil {
+			placeholder := fmt.Sprintf("__HELM_COMPOSE_CONFIG_CONTENT_%d__", i)
+			data[key] = placeholder
+			contentPlaceholders[placeholder] = helmStringValue(config.Bridge.ContentValue.Name) + " | quote }}"
+		} else {
+			data[key] = config.Content
+		}
+	}
+	manifest := configMapManifest{
+		APIVersion: "v1",
+		Kind:       "ConfigMap",
+		Metadata: objectMeta{
+			Name:      composeConfigMapName(app.Package.Name, config),
+			Namespace: helmReleaseNamespace,
+			Labels:    reloadableAppLabels(app.Package.Name, config.Name),
+		},
+		Data: data,
+	}
+	marshaled, err := yamlv3.Marshal(manifest)
+	if err != nil {
+		return fmt.Errorf("marshal yaml for %s: %w", path, err)
+	}
+	rendered := string(marshaled)
+	if config.Bridge == nil {
+		return writeRenderedFile(path, rendered)
+	}
+	for placeholder, templateValue := range contentPlaceholders {
+		rendered = strings.Replace(rendered, placeholder, templateValue, 1)
+	}
+	if config.Bridge.EnabledValue != nil {
+		rendered = fmt.Sprintf("{{- if %s }}\n%s{{- end }}\n", helmValueExpression(config.Bridge.EnabledValue.Name), rendered)
+	}
+	return writeRenderedFile(path, rendered)
+}
+
+func helmStringValue(name string) string {
+	return fmt.Sprintf("{{ %s | toString", helmValueExpression(name))
+}
+
+func helmValueExpression(name string) string {
+	return fmt.Sprintf("index .Values %q", name)
+}
+
+func composeConfigMapName(appName string, config model.Config) string {
+	if config.Bridge == nil {
+		return config.Name
+	}
+	return sanitizeManifestName(appName + "-" + config.Name)
+}
+
+func composeConfigDataKeys(services []model.Service, config model.Config) []string {
+	keys := map[string]struct{}{}
+	for _, svc := range services {
+		for _, ref := range svc.Configs {
+			if ref.Source == config.Name {
+				keys[composeConfigDataKey(ref, config)] = struct{}{}
+			}
+		}
+	}
+	if len(keys) == 0 {
+		keys[config.Name] = struct{}{}
+	}
+	out := make([]string, 0, len(keys))
+	for key := range keys {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func composeConfigDataKey(ref model.FileRef, config model.Config) string {
+	if config.Bridge == nil {
+		return config.Name
+	}
+	target := strings.TrimSpace(ref.Target)
+	if target == "" {
+		return config.Name
+	}
+	key := filepath.Base(target)
+	if key == "." || key == "/" || key == "" || !validConfigMapKey.MatchString(key) {
+		return config.Name
+	}
+	return key
+}
+
 // writeUDSPackageTemplate preserves the statically generated network rules and
 // appends deploy-time rules supplied through the chart value.
 func writeUDSPackageTemplate(path string, manifest udsPackageManifest) error {
@@ -831,6 +1129,7 @@ func writeChartValues(
 		ExternalSecrets:        map[string]externalResourceValues{},
 		ExternalConfigs:        map[string]externalResourceValues{},
 		UDS:                    udsValues{Domain: defaultDomain},
+		Generated:              map[string]any{},
 	}
 	if placeholder {
 		values.AdditionalNetworkAllow = zarfNetworkAllowPlaceholder
@@ -897,6 +1196,9 @@ func writeChartValues(
 			external.Key = zarfChartString(variable.ConfigMapKey)
 		}
 		values.ExternalConfigs[variable.ValuesKey] = external
+	}
+	for _, value := range buildBridgeHelmValues(app.Configs) {
+		values.Generated[value.Name] = value.Default
 	}
 
 	marshaled, err := yamlv3.Marshal(values)
@@ -1136,9 +1438,9 @@ func buildDeployment(
 	secretVariables map[string]secretVariableNames,
 	configs map[string]model.Config,
 	configVariables map[string]configVariableNames,
-) (deploymentManifest, []helmValueReplacement, error) {
+) (deploymentManifest, []helmValueReplacement, []conditionalVolume, []configChecksum, error) {
 	ports := svc.Ports
-	volumes, volumeMounts, helmValues := buildVolumes(svc, secrets, secretVariables, configs, configVariables)
+	volumes, volumeMounts, helmValues, conditionalVolumes := buildVolumes(appName, svc, secrets, secretVariables, configs, configVariables)
 	resources := &resourceRequirements{
 		Limits:   map[string]string{"cpu": resourceValuePlaceholder, "memory": resourceValuePlaceholder},
 		Requests: map[string]string{"cpu": resourceValuePlaceholder, "memory": resourceValuePlaceholder},
@@ -1170,6 +1472,11 @@ func buildDeployment(
 			podLabels[key] = value
 		}
 	}
+	checksums := buildConfigChecksums(svc, configs)
+	podAnnotations := map[string]string{}
+	for _, checksum := range checksums {
+		podAnnotations[checksum.AnnotationKey] = checksum.Placeholder
+	}
 
 	manifest := deploymentManifest{
 		APIVersion: "apps/v1",
@@ -1183,7 +1490,7 @@ func buildDeployment(
 			Replicas: 1,
 			Selector: labelSelector{MatchLabels: serviceSelector(svc.Name)},
 			Template: podTemplateSpec{
-				Metadata: objectMeta{Labels: podLabels},
+				Metadata: objectMeta{Labels: podLabels, Annotations: podAnnotations},
 				Spec: podSpec{
 					Hostname:       svc.Hostname,
 					InitContainers: initContainers,
@@ -1194,7 +1501,7 @@ func buildDeployment(
 		},
 	}
 
-	return manifest, helmValues, nil
+	return manifest, helmValues, conditionalVolumes, checksums, nil
 }
 
 func buildService(appName string, namespace string, svc model.Service) serviceManifest {
@@ -1758,15 +2065,17 @@ func gatewayPortCandidate(port model.Port, requirePublished bool) bool {
 }
 
 func buildVolumes(
+	appName string,
 	svc model.Service,
 	secrets map[string]model.Secret,
 	secretVariables map[string]secretVariableNames,
 	configs map[string]model.Config,
 	configVariables map[string]configVariableNames,
-) ([]volumeSpec, []volumeMountSpec, []helmValueReplacement) {
+) ([]volumeSpec, []volumeMountSpec, []helmValueReplacement, []conditionalVolume) {
 	volumes := make([]volumeSpec, 0, len(svc.Volumes)+len(svc.Secrets)+len(svc.Configs))
 	mounts := make([]volumeMountSpec, 0, len(svc.Volumes)+len(svc.Secrets)+len(svc.Configs))
 	helmValues := []helmValueReplacement{}
+	conditionalVolumes := []conditionalVolume{}
 	volumeNames := map[string]string{}
 
 	for _, mount := range svc.Volumes {
@@ -1834,12 +2143,20 @@ func buildVolumes(
 
 	for _, ref := range svc.Configs {
 		volumeKey := "config:" + ref.Source
+		if ref.Mode != nil {
+			volumeKey += fmt.Sprintf(":mode:%o", *ref.Mode)
+		}
 		volumeName, exists := volumeNames[volumeKey]
 		if !exists {
 			volumeName = sanitizeDNSLabelName("config-" + ref.Source)
+			if ref.Mode != nil {
+				volumeName = sanitizeDNSLabelName(fmt.Sprintf("config-%s-mode-%o", ref.Source, *ref.Mode))
+			}
 			volumeNames[volumeKey] = volumeName
-			configMapName := ref.Source
-			configMapKey := ref.Source
+			config := configs[ref.Source]
+			configMapName := composeConfigMapName(appName, config)
+			itemPath := composeConfigDataKey(ref, config)
+			configMapKey := itemPath
 			if config, external := configs[ref.Source]; external && config.External {
 				variable := configVariables[ref.Source]
 				configMapName = addExternalResourceHelmValue(
@@ -1862,20 +2179,71 @@ func buildVolumes(
 			volumes = append(volumes, volumeSpec{
 				Name: volumeName,
 				ConfigMap: &configMapVolumeSource{
-					Name:  configMapName,
-					Items: []keyToPath{{Key: configMapKey, Path: ref.Source}},
+					Name:        configMapName,
+					Items:       []keyToPath{{Key: configMapKey, Path: itemPath}},
+					DefaultMode: ref.Mode,
 				},
 			})
+			if config.Bridge != nil && config.Bridge.EnabledValue != nil {
+				conditionalVolumes = append(conditionalVolumes, conditionalVolume{
+					Name:         volumeName,
+					EnabledValue: config.Bridge.EnabledValue.Name,
+				})
+			}
 		}
+		config := configs[ref.Source]
+		configMapKey := composeConfigDataKey(ref, config)
 		mounts = append(mounts, volumeMountSpec{
 			Name:      volumeName,
 			MountPath: resolveConfigTargetPath(ref.Source, ref.Target),
-			SubPath:   ref.Source,
+			SubPath:   configMapKey,
 			ReadOnly:  true,
 		})
 	}
 
-	return volumes, mounts, helmValues
+	return volumes, mounts, helmValues, conditionalVolumes
+}
+
+type conditionalVolume struct {
+	Name         string
+	EnabledValue string
+}
+
+type configChecksum struct {
+	AnnotationKey string
+	Placeholder   string
+	EnabledValue  string
+	ContentValue  string
+	StaticContent string
+}
+
+func buildConfigChecksums(svc model.Service, configs map[string]model.Config) []configChecksum {
+	checksums := []configChecksum{}
+	seen := map[string]struct{}{}
+	for _, ref := range svc.Configs {
+		config := configs[ref.Source]
+		if config.Bridge == nil || !config.Bridge.RolloutOnChange {
+			continue
+		}
+		key := config.Name
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		checksum := configChecksum{
+			AnnotationKey: "checksum/" + config.Name,
+			Placeholder:   fmt.Sprintf("__HELM_CONFIG_CHECKSUM_%d__", len(checksums)),
+			StaticContent: config.Content,
+		}
+		if config.Bridge.EnabledValue != nil {
+			checksum.EnabledValue = config.Bridge.EnabledValue.Name
+		}
+		if config.Bridge.ContentValue != nil {
+			checksum.ContentValue = config.Bridge.ContentValue.Name
+		}
+		checksums = append(checksums, checksum)
+	}
+	return checksums
 }
 
 type helmValueReplacement struct {
@@ -2541,6 +2909,7 @@ var portNameLetter = regexp.MustCompile(`[a-z]`)
 var invalidZarfVariableRunes = regexp.MustCompile(`[^A-Z0-9_]+`)
 var validZarfVariableName = regexp.MustCompile(`^[A-Z0-9_]+$`)
 var kubernetesEnvironmentName = regexp.MustCompile(`^[-._a-zA-Z][-._a-zA-Z0-9]*$`)
+var validConfigMapKey = regexp.MustCompile(`^[-._a-zA-Z0-9]+$`)
 
 func sanitizeManifestName(raw string) string {
 	name := strings.ToLower(strings.TrimSpace(raw))
@@ -2758,8 +3127,9 @@ type secretVolumeSource struct {
 }
 
 type configMapVolumeSource struct {
-	Name  string      `yaml:"name"`
-	Items []keyToPath `yaml:"items,omitempty"`
+	Name        string      `yaml:"name"`
+	Items       []keyToPath `yaml:"items,omitempty"`
+	DefaultMode *int32      `yaml:"defaultMode,omitempty"`
 }
 
 type keyToPath struct {
@@ -2909,6 +3279,39 @@ type chartValues struct {
 	ExternalSecrets        map[string]externalResourceValues `yaml:"externalSecrets,omitempty"`
 	ExternalConfigs        map[string]externalResourceValues `yaml:"externalConfigs,omitempty"`
 	UDS                    udsValues                         `yaml:"uds"`
+	Generated              map[string]any                    `yaml:",inline"`
+}
+
+type bridgeHelmValue struct {
+	Name        string
+	Description string
+	Default     any
+}
+
+func buildBridgeHelmValues(configs map[string]model.Config) []bridgeHelmValue {
+	values := []bridgeHelmValue{}
+	for _, name := range sortedConfigNames(configs) {
+		config := configs[name]
+		if config.Bridge == nil {
+			continue
+		}
+		if config.Bridge.EnabledValue != nil {
+			values = append(values, bridgeHelmValue{
+				Name:        config.Bridge.EnabledValue.Name,
+				Description: fmt.Sprintf("Render and mount Compose config %s", config.Name),
+				Default:     config.Bridge.EnabledValue.Default,
+			})
+		}
+		if config.Bridge.ContentValue != nil {
+			values = append(values, bridgeHelmValue{
+				Name:        config.Bridge.ContentValue.Name,
+				Description: fmt.Sprintf("Content for Compose config %s", config.Name),
+				Default:     config.Bridge.ContentValue.Default,
+			})
+		}
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i].Name < values[j].Name })
+	return values
 }
 
 type resourceValues struct {

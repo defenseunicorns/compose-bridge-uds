@@ -417,6 +417,9 @@ func loadProject(project types.Project, raw map[string]any, excludedServices map
 		}
 	}
 	volumes, secrets, configs = retainReferencedResources(services, volumes, secrets, configs)
+	if err := validateBridgeConfigValues(configs); err != nil {
+		return model.App{}, err
+	}
 	if err := validateExcludedPackageReferences(packageCfg, excludedAliases); err != nil {
 		return model.App{}, err
 	}
@@ -1271,7 +1274,16 @@ func parseServiceConfigs(raw []types.ServiceConfigObjConfig, aliases map[string]
 			continue
 		}
 		seen[key] = struct{}{}
-		refs = append(refs, model.FileRef{Source: source, Target: target})
+		var mode *int32
+		if entry.Mode != nil {
+			rawMode := int64(*entry.Mode)
+			if rawMode < 0 || rawMode > 0o777 {
+				return nil, fmt.Errorf("config %q mode %s must be between 0000 and 0777", sourceRaw, entry.Mode.String())
+			}
+			value := int32(rawMode)
+			mode = &value
+		}
+		refs = append(refs, model.FileRef{Source: source, Target: target, Mode: mode})
 	}
 	return refs, nil
 }
@@ -1424,16 +1436,170 @@ func normalizeTopLevelConfigs(raw types.Configs) (map[string]model.Config, map[s
 		if _, exists := configs[normalized]; exists {
 			return nil, nil, fmt.Errorf("duplicate normalized top-level config name %q", normalized)
 		}
+		bridge, err := parseBridgeConfig(value.Extensions["x-compose-bridge"], "configs."+key+".x-compose-bridge")
+		if err != nil {
+			return nil, nil, err
+		}
+		if bridge != nil && bool(value.External) {
+			return nil, nil, fmt.Errorf("invalid configs.%s.x-compose-bridge: external configs cannot use chart-owned rendering controls", key)
+		}
 		configs[normalized] = model.Config{
 			Name:         normalized,
 			ExternalName: strings.TrimSpace(value.Name),
 			External:     bool(value.External),
 			Content:      value.Content,
+			Bridge:       bridge,
 		}
 		registerAlias(aliases, key, normalized)
 		registerAlias(aliases, normalized, normalized)
 	}
 	return configs, aliases, nil
+}
+
+var helmValueNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
+
+func parseBridgeConfig(raw any, path string) (*model.BridgeConfig, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	extension, ok := asMap(raw)
+	if !ok {
+		return nil, fmt.Errorf("invalid %s: must be an object", path)
+	}
+	for key := range extension {
+		switch key {
+		case "enabledValue", "contentValue", "rolloutOnChange":
+		default:
+			return nil, fmt.Errorf("invalid %s.%s: unsupported field", path, key)
+		}
+	}
+
+	config := &model.BridgeConfig{}
+	if value, exists := extension["enabledValue"]; exists {
+		parsed, err := parseBridgeBoolValue(value, path+".enabledValue")
+		if err != nil {
+			return nil, err
+		}
+		config.EnabledValue = parsed
+	}
+	if value, exists := extension["contentValue"]; exists {
+		parsed, err := parseBridgeStringValue(value, path+".contentValue")
+		if err != nil {
+			return nil, err
+		}
+		config.ContentValue = parsed
+	}
+	if value, exists := extension["rolloutOnChange"]; exists {
+		rollout, ok := value.(bool)
+		if !ok {
+			return nil, fmt.Errorf("invalid %s.rolloutOnChange: must be a boolean", path)
+		}
+		config.RolloutOnChange = rollout
+	}
+	if config.EnabledValue == nil && config.ContentValue == nil && !config.RolloutOnChange {
+		return nil, nil
+	}
+	return config, nil
+}
+
+func parseBridgeBoolValue(raw any, path string) (*model.HelmBoolValue, error) {
+	value, ok := asMap(raw)
+	if !ok {
+		return nil, fmt.Errorf("invalid %s: must be an object", path)
+	}
+	for key := range value {
+		if key != "name" && key != "default" {
+			return nil, fmt.Errorf("invalid %s.%s: unsupported field", path, key)
+		}
+	}
+	name, err := bridgeHelmValueName(value["name"], path+".name")
+	if err != nil {
+		return nil, err
+	}
+	defaultValue := false
+	if rawDefault, exists := value["default"]; exists {
+		parsed, ok := rawDefault.(bool)
+		if !ok {
+			return nil, fmt.Errorf("invalid %s.default: must be a boolean", path)
+		}
+		defaultValue = parsed
+	}
+	return &model.HelmBoolValue{Name: name, Default: defaultValue}, nil
+}
+
+func parseBridgeStringValue(raw any, path string) (*model.HelmStringValue, error) {
+	value, ok := asMap(raw)
+	if !ok {
+		return nil, fmt.Errorf("invalid %s: must be an object", path)
+	}
+	for key := range value {
+		if key != "name" && key != "default" {
+			return nil, fmt.Errorf("invalid %s.%s: unsupported field", path, key)
+		}
+	}
+	name, err := bridgeHelmValueName(value["name"], path+".name")
+	if err != nil {
+		return nil, err
+	}
+	defaultValue := ""
+	if rawDefault, exists := value["default"]; exists {
+		parsed, ok := rawDefault.(string)
+		if !ok {
+			return nil, fmt.Errorf("invalid %s.default: must be a string", path)
+		}
+		defaultValue = parsed
+	}
+	return &model.HelmStringValue{Name: name, Default: defaultValue}, nil
+}
+
+func bridgeHelmValueName(raw any, path string) (string, error) {
+	name, ok := raw.(string)
+	name = strings.TrimSpace(name)
+	if !ok || !helmValueNamePattern.MatchString(name) {
+		return "", fmt.Errorf("invalid %s: must match %s", path, helmValueNamePattern.String())
+	}
+	return name, nil
+}
+
+func validateBridgeConfigValues(configs map[string]model.Config) error {
+	owners := map[string]string{
+		"additionalNetworkAllow": "generated network configuration",
+		"environment":            "generated environment configuration",
+		"externalConfigs":        "generated external config references",
+		"externalSecrets":        "generated external secret references",
+		"resources":              "generated resource configuration",
+		"secrets":                "generated secret configuration",
+		"uds":                    "generated UDS configuration",
+	}
+	for _, name := range sortedConfigKeys(configs) {
+		bridge := configs[name].Bridge
+		if bridge == nil {
+			continue
+		}
+		values := []string{}
+		if bridge.EnabledValue != nil {
+			values = append(values, bridge.EnabledValue.Name)
+		}
+		if bridge.ContentValue != nil {
+			values = append(values, bridge.ContentValue.Name)
+		}
+		for _, valueName := range values {
+			if owner, exists := owners[valueName]; exists {
+				return fmt.Errorf("invalid configs.%s.x-compose-bridge: Helm value %q conflicts with %s", name, valueName, owner)
+			}
+			owners[valueName] = fmt.Sprintf("Compose config %q", name)
+		}
+	}
+	return nil
+}
+
+func sortedConfigKeys(configs map[string]model.Config) []string {
+	keys := make([]string, 0, len(configs))
+	for key := range configs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func formatNanoCPUs(value types.NanoCPUs) string {
