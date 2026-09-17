@@ -91,7 +91,7 @@ Every resolved service environment value becomes a non-sensitive Zarf variable n
 
 The bridge renders one `<service>-environment` ConfigMap for each service with environment values and attaches it to that service through `envFrom`. Empty environment ConfigMaps are omitted. Package-owned environment and Compose configuration ConfigMaps carry the `uds.dev/pod-reload: "true"` label so UDS can restart dependent Pods when their data changes. The bridge cannot add that label to external ConfigMaps. Direct Helm deployments do not provide UDS reload behavior.
 
-ConfigMaps do not protect sensitive data; use Compose `secrets:` for credentials and other confidential values. Environment names must use the Kubernetes-compatible `[-._a-zA-Z][-._a-zA-Z0-9]*` form; dots and hyphens are supported. Generated Zarf variable names must also be unique across all services, configs, secrets, and automatic package variables such as resource settings, `DOMAIN`, and `ADDITIONAL_NETWORK_ALLOW`; conversion fails rather than emitting an ambiguous package when names collide.
+ConfigMaps do not protect sensitive data; use Compose `secrets:` for credentials and other confidential values. Environment names must use the Kubernetes-compatible `[-._a-zA-Z][-._a-zA-Z0-9]*` form; dots and hyphens are supported. Generated Zarf variable names must also be unique across all services, configs, secrets, and automatic package variables such as resource settings, `HOST_NAME`, `DOMAIN`, and `ADDITIONAL_NETWORK_ALLOW`; conversion fails rather than emitting an ambiguous package when names collide.
 
 ## Deployment resources
 
@@ -99,20 +99,25 @@ Every generated service exposes four non-sensitive, non-prompting Zarf variables
 
 The four quantities are independent. A deployment can override one without restating the others. Empty quantities are omitted from the rendered Deployment; if all four are empty, the container has no `resources` field. CPU and memory values are rendered as quoted Kubernetes quantity strings.
 
-## Package domain
+## Package hostname and domain
 
-Every generated package defines the non-sensitive Zarf variable `DOMAIN`, which defaults to `uds.dev`.
+Every generated package defines two non-sensitive Zarf variables for inferred public endpoints:
 
-The Helm release namespace defaults to the package name unless a different namespace is selected at deployment. Together, these defaults determine inferred endpoints and redirects:
+- `HOST_NAME` overrides the first inferred endpoint hostname; when empty, the Helm release namespace is used.
+- `DOMAIN` defaults to `uds.dev` and supplies the domain suffix.
 
-| Value | If omitted | If set |
-|---|---|---|
-| First endpoint host | Helm release namespace | Preserved as written |
-| SSO redirect URI | `https://<endpoint-host>.<DOMAIN>/*` | Preserved as written |
+For a package named `hello-world` with `DOMAIN=uds.dev`, common deployment patterns produce:
 
-For example, a package named `hello-world` with no overrides uses the `hello-world` namespace, the endpoint `hello-world.uds.dev`, and the SSO redirect URI `https://hello-world.uds.dev/*`.
+| Scenario | Namespace | `HOST_NAME` | Public endpoint | Inferred SSO redirect URI |
+|---|---|---|---|---|
+| Default deployment | `hello-world` | unset | `https://hello-world.uds.dev` | `https://hello-world.uds.dev/*` |
+| Team 1 copy | `hello-world-team1` | unset | `https://hello-world-team1.uds.dev` | `https://hello-world-team1.uds.dev/*` |
+| Team 2 copy | `hello-world-team2` | unset | `https://hello-world-team2.uds.dev` | `https://hello-world-team2.uds.dev/*` |
+| Public hostname differs from namespace | `hello-world-team3` | `hello-world-team3-public` | `https://hello-world-team3-public.uds.dev` | `https://hello-world-team3-public.uds.dev/*` |
 
-`DOMAIN` is package configuration, not container configuration. The bridge does not inject it into application containers or give special meaning to a Compose environment variable named `DOMAIN`. Applications that need their public origin must continue to declare the setting expected by the image, such as `PUBLIC_URL`, `ROOT_URL`, or `APP_ORIGIN`, in Compose.
+The namespace controls placement and the SSO client ID. `HOST_NAME` only changes the first inferred host and redirect; it does not rename resources. Explicit `x-uds` values take precedence.
+
+`HOST_NAME` and `DOMAIN` are package configuration, not container configuration. The bridge does not inject them into application containers or give special meaning to a Compose environment variables named `HOST_NAME` or `DOMAIN`. Applications that need their public origin must continue to declare the setting expected by the image, such as `PUBLIC_URL`, `ROOT_URL`, or `APP_ORIGIN`, in Compose.
 
 ## Deploy-time network access
 
