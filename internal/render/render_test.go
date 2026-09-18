@@ -1826,6 +1826,62 @@ x-after-config:
 	}
 }
 
+func TestWritePackageRendersInlineConfigNamesThatLookLikeYAMLScalars(t *testing.T) {
+	t.Parallel()
+
+	udsPath, err := exec.LookPath("uds")
+	if err != nil {
+		t.Skip("uds CLI is required for Helm rendering assertions")
+	}
+
+	for _, configName := range []string{"true", "null", "123"} {
+		t.Run(configName, func(t *testing.T) {
+			t.Parallel()
+
+			input := []byte(fmt.Sprintf(`name: demo
+services:
+  app:
+    image: example/app
+    configs:
+      - source: %q
+configs:
+  %q:
+    content: |
+      value
+`, configName, configName))
+
+			app, err := compose.LoadCanonicalYAML(input)
+			if err != nil {
+				t.Fatalf("LoadCanonicalYAML() error = %v", err)
+			}
+			outDir := t.TempDir()
+			if err := render.WritePackage(outDir, app); err != nil {
+				t.Fatalf("WritePackage() error = %v", err)
+			}
+
+			templatePath := filepath.Join(outDir, "chart", "templates", "configmap-"+configName+".yaml")
+			configMapTemplate := readFile(t, templatePath)
+			if strings.Contains(configMapTemplate, "__HELM_CONFIG_KEY__") {
+				t.Fatalf("temporary config key leaked into generated template\n%s", configMapTemplate)
+			}
+
+			rendered, err := exec.Command(udsPath, "zarf", "tools", "helm", "template", "demo", filepath.Join(outDir, "chart")).CombinedOutput()
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, rendered)
+			}
+
+			configMap := findYAMLDocumentByKind(t, rendered, "ConfigMap")
+			data := mustMap(t, configMap["data"])
+			if got := data[configName]; got != "value\n" {
+				t.Fatalf("rendered data[%q] = %#v, want %q", configName, got, "value\n")
+			}
+			if len(data) != 1 {
+				t.Fatalf("rendered ConfigMap data = %#v, want only key %q", data, configName)
+			}
+		})
+	}
+}
+
 func TestWritePackageRejectsInlineConfigVariableAndHelmKeyCollisions(t *testing.T) {
 	t.Parallel()
 
