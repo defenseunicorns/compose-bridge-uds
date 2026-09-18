@@ -44,6 +44,9 @@ const (
 	additionalNetworkAllowVariable    = "ADDITIONAL_NETWORK_ALLOW"
 	additionalNetworkAllowPlaceholder = "__HELM_ADDITIONAL_NETWORK_ALLOW__"
 	helmReleaseNamespace              = "{{ .Release.Namespace }}"
+	subdomainVariable                 = "SUBDOMAIN"
+	helmSubdomainValue                = "{{ include \"composeBridge.subdomain\" . }}"
+	zarfSubdomainPlaceholder          = "__ZARF_SUBDOMAIN__"
 	zarfNetworkAllowPlaceholder       = "__ZARF_ADDITIONAL_NETWORK_ALLOW__"
 	domainVariable                    = "DOMAIN"
 	defaultDomain                     = "uds.dev"
@@ -74,6 +77,14 @@ const externalResourceHelpers = `{{- define "composeBridge.externalResourceName"
   {{- fail (printf "%s; got %q" $description $value) -}}
 {{- end -}}
 {{- $value | quote -}}
+{{- end -}}
+
+{{- define "composeBridge.subdomain" -}}
+{{- $value := .Values.uds.subdomain | default .Release.Namespace | toString -}}
+{{- if or (gt (len $value) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $value)) -}}
+  {{- fail (printf "effective SUBDOMAIN must be a DNS-1123 label (lowercase alphanumeric characters or '-', starting and ending with alphanumeric, at most 63 characters); got %q" $value) -}}
+{{- end -}}
+{{- $value -}}
 {{- end -}}
 `
 
@@ -413,6 +424,7 @@ func buildConfigurationDocumentation(app model.App, secretVariables map[string]s
 	content.WriteString("Set these values when deploying the generated Zarf package.\n\n")
 	content.WriteString("| Variable | Description | Default | Sensitive |\n")
 	content.WriteString("|---|---|---|---|\n")
+	writeDocumentationVariable(&content, subdomainVariable, "Subdomain for the first inferred tenant-gateway endpoint and inferred SSO redirect URI; empty uses the Helm release namespace", "", false)
 	writeDocumentationVariable(&content, domainVariable, "Cluster domain used by generated application endpoints", defaultDomain, false)
 	writeDocumentationVariable(&content, additionalNetworkAllowVariable, "Additional UDS network allow rules supplied as a YAML array", "[]", false)
 
@@ -830,10 +842,11 @@ func writeChartValues(
 		Secrets:                map[string]string{},
 		ExternalSecrets:        map[string]externalResourceValues{},
 		ExternalConfigs:        map[string]externalResourceValues{},
-		UDS:                    udsValues{Domain: defaultDomain},
+		UDS:                    udsValues{Subdomain: "", Domain: defaultDomain},
 	}
 	if placeholder {
 		values.AdditionalNetworkAllow = zarfNetworkAllowPlaceholder
+		values.UDS.Subdomain = zarfSubdomainPlaceholder
 		values.UDS.Domain = zarfDomainPlaceholder
 	}
 
@@ -919,6 +932,14 @@ func writeChartValues(
 			return fmt.Errorf("render domain Zarf variable in %s: placeholder not found", path)
 		}
 		rendered = withDomain
+
+		subdomainPlaceholderLine := "    subdomain: " + zarfSubdomainPlaceholder
+		subdomainVariableLine := "    subdomain: \"###ZARF_VAR_" + subdomainVariable + "###\""
+		withSubdomain := strings.Replace(rendered, subdomainPlaceholderLine, subdomainVariableLine, 1)
+		if withSubdomain == rendered {
+			return fmt.Errorf("render subdomain Zarf variable in %s: placeholder not found", path)
+		}
+		rendered = withSubdomain
 	}
 	if err := os.WriteFile(path, []byte(rendered), 0o644); err != nil {
 		return fmt.Errorf("write file %s: %w", path, err)
@@ -937,6 +958,11 @@ func writeZarfConfig(
 	includeConversionReport bool,
 ) error {
 	variables := []zarfVariable{
+		{
+			Name:        subdomainVariable,
+			Description: "Subdomain for the first inferred tenant-gateway endpoint and inferred SSO redirect URI; empty uses the Helm release namespace",
+			Default:     stringPointer(""),
+		},
 		{
 			Name:        domainVariable,
 			Description: "The domain for accessing endpoints",
@@ -1360,7 +1386,7 @@ func buildAutoExposes(app model.App) []any {
 		svcSelector := map[string]string{"app.kubernetes.io/name": svc.Name}
 		host := svc.Name
 		if len(expose) == 0 {
-			host = helmReleaseNamespace
+			host = helmSubdomainValue
 		}
 		expose = append(expose, map[string]any{
 			"service":   svc.Name,
@@ -1390,7 +1416,7 @@ func enrichNetworkExposes(app model.App) []any {
 		setDefault(item, "gateway", "tenant")
 		defaultHost := serviceName
 		if exposeIndex == 0 {
-			defaultHost = helmReleaseNamespace
+			defaultHost = helmSubdomainValue
 		}
 		setDefault(item, "host", defaultHost)
 
@@ -1415,7 +1441,7 @@ func enrichNetworkExposes(app model.App) []any {
 // buildSSO generates, disables, or enriches SSO configuration.
 func buildSSO(app model.App) []any {
 	primaryExposure := inference.PrimaryExposure(app)
-	host := primaryExposure.ResolveHost(helmReleaseNamespace)
+	host := primaryExposure.ResolveHost(helmSubdomainValue)
 	service := primaryExposure.Service
 	if app.Package.SSOConfigured {
 		if len(app.Package.SSO) == 0 {
@@ -2132,6 +2158,7 @@ func buildEnvironmentVariables(
 	usedVariables := map[string]variableOwner{
 		additionalNetworkAllowVariable: {description: fmt.Sprintf("automatic package variable %q", additionalNetworkAllowVariable), path: "package"},
 		domainVariable:                 {description: fmt.Sprintf("automatic package variable %q", domainVariable), path: "package"},
+		subdomainVariable:              {description: fmt.Sprintf("automatic package variable %q", subdomainVariable), path: "package"},
 	}
 	for _, svc := range app.Services {
 		resourceVariables := buildResourceVariableNames(svc.Name)
@@ -2922,7 +2949,8 @@ type resourceQuantityValues struct {
 }
 
 type udsValues struct {
-	Domain string `yaml:"domain"`
+	Domain    string `yaml:"domain"`
+	Subdomain string `yaml:"subdomain"`
 }
 
 type chartString struct {
