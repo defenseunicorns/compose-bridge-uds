@@ -250,16 +250,13 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 		if config.External {
 			continue
 		}
-		if err := writeYAMLFile(filepath.Join(templatesDir, fmt.Sprintf("configmap-%s.yaml", config.Name)), configMapManifest{
-			APIVersion: "v1",
-			Kind:       "ConfigMap",
-			Metadata: objectMeta{
-				Name:      config.Name,
-				Namespace: helmReleaseNamespace,
-				Labels:    reloadableAppLabels(app.Package.Name, config.Name),
-			},
-			Data: map[string]string{config.Name: config.Content},
-		}); err != nil {
+		if err := writeConfigMapTemplate(
+			filepath.Join(templatesDir, fmt.Sprintf("configmap-%s.yaml", config.Name)),
+			app,
+			config,
+			configVariables[name].ValuesKey,
+			configVariables[name].Content,
+		); err != nil {
 			return err
 		}
 	}
@@ -428,10 +425,11 @@ func buildConfigurationDocumentation(app model.App, secretVariables map[string]s
 	}
 	for _, configName := range sortedConfigNames(app.Configs) {
 		config := app.Configs[configName]
+		variable := configVariables[configName]
 		if !config.External {
+			writeDocumentationVariable(&content, variable.Content, fmt.Sprintf("Content for Compose config %s (Helm value configs.%s)", configName, variable.ValuesKey), config.Content, false)
 			continue
 		}
-		variable := configVariables[configName]
 		writeDocumentationVariable(&content, variable.ConfigMapName, fmt.Sprintf("Kubernetes ConfigMap name for external Compose config %s", configName), config.ExternalName, false)
 		writeDocumentationVariable(&content, variable.ConfigMapKey, fmt.Sprintf("Key in the Kubernetes ConfigMap for external Compose config %s", configName), config.Name, false)
 	}
@@ -719,6 +717,43 @@ func writeDeploymentTemplate(path string, manifest deploymentManifest, serviceNa
 	return writeRenderedFile(path, rendered)
 }
 
+// writeConfigMapTemplate renders package-owned Compose config content from the
+// generated configs.<camelCase> Helm value. The value is not passed through
+// tpl, so application content that resembles a Helm expression remains literal.
+func writeConfigMapTemplate(path string, app model.App, config model.Config, valuesKey, contentVariable string) error {
+	const (
+		placeholder          = "__HELM_CONFIG_CONTENT__"
+		configKeyPlaceholder = "__HELM_CONFIG_KEY__"
+	)
+	manifest := configMapManifest{
+		APIVersion: "v1",
+		Kind:       "ConfigMap",
+		Metadata: objectMeta{
+			Name:      config.Name,
+			Namespace: helmReleaseNamespace,
+			Labels:    reloadableAppLabels(app.Package.Name, config.Name),
+		},
+		Data: map[string]string{configKeyPlaceholder: placeholder},
+	}
+	marshaled, err := yamlv3.Marshal(manifest)
+	if err != nil {
+		return fmt.Errorf("marshal yaml for %s: %w", path, err)
+	}
+	placeholderLine := "    " + configKeyPlaceholder + ": " + placeholder
+	templateBlock := fmt.Sprintf(
+		"    # Helm value: configs.%s; Zarf variable: %s\n{{ dict %q (index .Values.configs %q) | toYaml | indent 4 }}",
+		valuesKey,
+		contentVariable,
+		config.Name,
+		valuesKey,
+	)
+	rendered := strings.Replace(string(marshaled), placeholderLine, templateBlock, 1)
+	if rendered == string(marshaled) {
+		return fmt.Errorf("render config content template in %s: placeholder not found", path)
+	}
+	return writeRenderedFile(path, rendered)
+}
+
 // writeSecretTemplate writes a Helm-templated Secret whose value is sourced from
 // chart values (.Values.secrets.<variableName>) rather than a static literal, so
 // Zarf can inject the sensitive value via the chart values file at deploy time.
@@ -828,6 +863,7 @@ func writeChartValues(
 		Environment:            map[string]map[string]string{},
 		Resources:              map[string]resourceValues{},
 		Secrets:                map[string]string{},
+		Configs:                map[string]chartString{},
 		ExternalSecrets:        map[string]externalResourceValues{},
 		ExternalConfigs:        map[string]externalResourceValues{},
 		UDS:                    udsValues{Domain: defaultDomain},
@@ -884,10 +920,15 @@ func writeChartValues(
 	}
 	for _, name := range sortedConfigNames(app.Configs) {
 		config := app.Configs[name]
+		variable := configVariables[name]
 		if !config.External {
+			value := chartString{Value: config.Content, Literal: true}
+			if placeholder {
+				value = zarfChartString(variable.Content)
+			}
+			values.Configs[variable.ValuesKey] = value
 			continue
 		}
-		variable := configVariables[name]
 		external := externalResourceValues{
 			Name: plainChartString(config.ExternalName),
 			Key:  plainChartString(config.Name),
@@ -977,10 +1018,16 @@ func writeZarfConfig(
 	}
 	for _, configName := range sortedConfigNames(app.Configs) {
 		config := app.Configs[configName]
+		variable := configVariables[configName]
 		if !config.External {
+			variables = append(variables, zarfVariable{
+				Name:        variable.Content,
+				Description: fmt.Sprintf("Content for Compose config %s (Helm value configs.%s)", configName, variable.ValuesKey),
+				Default:     stringPointer(config.Content),
+				AutoIndent:  true,
+			})
 			continue
 		}
-		variable := configVariables[configName]
 		variables = append(variables,
 			zarfVariable{
 				Name:        variable.ConfigMapName,
@@ -1834,9 +1881,15 @@ func buildVolumes(
 
 	for _, ref := range svc.Configs {
 		volumeKey := "config:" + ref.Source
+		volumeNameSuffix := ""
+		if ref.Mode != nil {
+			mode := strconv.FormatInt(int64(*ref.Mode), 8)
+			volumeKey += ":mode:" + mode
+			volumeNameSuffix = "-mode-" + mode
+		}
 		volumeName, exists := volumeNames[volumeKey]
 		if !exists {
-			volumeName = sanitizeDNSLabelName("config-" + ref.Source)
+			volumeName = sanitizeDNSLabelName("config-" + ref.Source + volumeNameSuffix)
 			volumeNames[volumeKey] = volumeName
 			configMapName := ref.Source
 			configMapKey := ref.Source
@@ -1862,8 +1915,9 @@ func buildVolumes(
 			volumes = append(volumes, volumeSpec{
 				Name: volumeName,
 				ConfigMap: &configMapVolumeSource{
-					Name:  configMapName,
-					Items: []keyToPath{{Key: configMapKey, Path: ref.Source}},
+					Name:        configMapName,
+					Items:       []keyToPath{{Key: configMapKey, Path: ref.Source}},
+					DefaultMode: ref.Mode,
 				},
 			})
 		}
@@ -2160,13 +2214,25 @@ func buildEnvironmentVariables(
 			}
 		}
 	}
+	usedConfigValueKeys := map[string]string{}
 	for _, configName := range sortedConfigNames(app.Configs) {
 		config := app.Configs[configName]
-		if !config.External {
-			continue
-		}
 		variable := configVariables[configName]
-		for _, name := range []string{variable.ConfigMapName, variable.ConfigMapKey} {
+		if !config.External {
+			if existing, exists := usedConfigValueKeys[variable.ValuesKey]; exists {
+				return nil, &settingError{
+					path:        "configs." + configName,
+					code:        "helm-value-conflict",
+					message:     fmt.Sprintf("compose configs %q and %q generate the same Helm value configs.%s", existing, configName, variable.ValuesKey),
+					remediation: "rename one of the Compose configs so their generated camel-cased Helm value names are unique",
+				}
+			}
+			usedConfigValueKeys[variable.ValuesKey] = configName
+		}
+		for _, name := range []string{variable.Content, variable.ConfigMapName, variable.ConfigMapKey} {
+			if name == "" {
+				continue
+			}
 			if err := registerZarfVariable(
 				usedVariables,
 				name,
@@ -2321,6 +2387,7 @@ func buildSecretVariables(secrets map[string]model.Secret) map[string]secretVari
 
 type configVariableNames struct {
 	ValuesKey     string
+	Content       string
 	ConfigMapName string
 	ConfigMapKey  string
 }
@@ -2331,6 +2398,10 @@ func buildConfigVariables(configs map[string]model.Config) map[string]configVari
 	out := map[string]configVariableNames{}
 	for _, name := range sortedConfigNames(configs) {
 		if !configs[name].External {
+			out[name] = configVariableNames{
+				ValuesKey: lowerCamelConfigName(name),
+				Content:   normalizeZarfVariableName(name),
+			}
 			continue
 		}
 		valuesKey := buildUniqueVariableName(name, usedValuesKeys)
@@ -2341,6 +2412,25 @@ func buildConfigVariables(configs map[string]model.Config) map[string]configVari
 		}
 	}
 	return out
+}
+
+func lowerCamelConfigName(name string) string {
+	parts := strings.FieldsFunc(name, func(r rune) bool {
+		return r == '-' || r == '.' || r == '_'
+	})
+	if len(parts) == 0 {
+		return name
+	}
+	var value strings.Builder
+	value.WriteString(parts[0])
+	for _, part := range parts[1:] {
+		if part == "" {
+			continue
+		}
+		value.WriteString(strings.ToUpper(part[:1]))
+		value.WriteString(part[1:])
+	}
+	return value.String()
 }
 
 func buildUniqueVariableName(resourceName string, used map[string]struct{}) string {
@@ -2758,8 +2848,9 @@ type secretVolumeSource struct {
 }
 
 type configMapVolumeSource struct {
-	Name  string      `yaml:"name"`
-	Items []keyToPath `yaml:"items,omitempty"`
+	Name        string      `yaml:"name"`
+	Items       []keyToPath `yaml:"items,omitempty"`
+	DefaultMode *int32      `yaml:"defaultMode,omitempty"`
 }
 
 type keyToPath struct {
@@ -2906,6 +2997,7 @@ type chartValues struct {
 	Environment            map[string]map[string]string      `yaml:"environment,omitempty"`
 	Resources              map[string]resourceValues         `yaml:"resources"`
 	Secrets                map[string]string                 `yaml:"secrets"`
+	Configs                map[string]chartString            `yaml:"configs,omitempty"`
 	ExternalSecrets        map[string]externalResourceValues `yaml:"externalSecrets,omitempty"`
 	ExternalConfigs        map[string]externalResourceValues `yaml:"externalConfigs,omitempty"`
 	UDS                    udsValues                         `yaml:"uds"`
