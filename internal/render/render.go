@@ -721,22 +721,25 @@ func writeDeploymentTemplate(path string, manifest deploymentManifest, serviceNa
 // generated configs.<camelCase> Helm value. The value is not passed through
 // tpl, so application content that resembles a Helm expression remains literal.
 func writeConfigMapTemplate(path string, app model.App, config model.Config, valuesKey, contentVariable string) error {
-	const placeholder = "__HELM_CONFIG_CONTENT__"
-	manifest := configMapManifest{
-		APIVersion: "v1",
-		Kind:       "ConfigMap",
-		Metadata: objectMeta{
-			Name:      config.Name,
-			Namespace: helmReleaseNamespace,
-			Labels:    reloadableAppLabels(app.Package.Name, config.Name),
-		},
-		Data: map[string]string{config.Name: placeholder},
-	}
-	marshaled, err := yamlv3.Marshal(manifest)
-	if err != nil {
-		return fmt.Errorf("marshal yaml for %s: %w", path, err)
-	}
-	placeholderLine := "    " + config.Name + ": " + placeholder
+const (
+	placeholder          = "__HELM_CONFIG_CONTENT__"
+	configKeyPlaceholder = "__HELM_CONFIG_KEY__"
+)
+manifest := configMapManifest{
+	APIVersion: "v1",
+	Kind:       "ConfigMap",
+	Metadata: objectMeta{
+		Name:      config.Name,
+		Namespace: helmReleaseNamespace,
+		Labels:    reloadableAppLabels(app.Package.Name, config.Name),
+	},
+	Data: map[string]string{configKeyPlaceholder: placeholder},
+}
+marshaled, err := yamlv3.Marshal(manifest)
+if err != nil {
+	return fmt.Errorf("marshal yaml for %s: %w", path, err)
+}
+placeholderLine := "    " + configKeyPlaceholder + ": " + placeholder
 	templateBlock := fmt.Sprintf(
 		"    # Helm value: configs.%s; Zarf variable: %s\n{{ dict %q (index .Values.configs %q) | toYaml | indent 4 }}",
 		valuesKey,
