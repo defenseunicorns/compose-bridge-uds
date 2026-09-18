@@ -1464,8 +1464,8 @@ secrets:
 	if got := udsValues["domain"]; got != "uds.dev" {
 		t.Fatalf("expected default UDS domain, got %#v", got)
 	}
-	if got := udsValues["hostName"]; got != "" {
-		t.Fatalf("expected empty default UDS host name, got %#v", got)
+	if got := udsValues["subdomain"]; got != "" {
+		t.Fatalf("expected empty default UDS subdomain, got %#v", got)
 	}
 	workerEnvironment := mustMap(t, mustMap(t, chartValues["environment"])["worker"])
 	if got := workerEnvironment["DOMAIN"]; got != "internal.example" {
@@ -1481,7 +1481,7 @@ secrets:
 	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
 	for _, want := range []string{
 		"domain: \"###ZARF_VAR_DOMAIN###\"",
-		"hostName: \"###ZARF_VAR_HOST_NAME###\"",
+		"subdomain: \"###ZARF_VAR_SUBDOMAIN###\"",
 		"###ZARF_VAR_WORKER_DOMAIN###",
 		"###ZARF_VAR_API_KEY###",
 		"###ZARF_VAR_ADDITIONAL_NETWORK_ALLOW###",
@@ -1511,15 +1511,15 @@ secrets:
 	if _, exists := domain["prompt"]; exists {
 		t.Fatalf("DOMAIN must not prompt, got %#v", domain)
 	}
-	hostName := variablesByName["HOST_NAME"]
-	if hostName == nil || hostName["default"] != "" || !strings.Contains(hostName["description"].(string), "first inferred tenant-gateway endpoint") || !strings.Contains(hostName["description"].(string), "inferred SSO redirect URI") {
-		t.Fatalf("expected non-sensitive HOST_NAME package variable, got %#v", hostName)
+	subdomain := variablesByName["SUBDOMAIN"]
+	if subdomain == nil || subdomain["default"] != "" || !strings.Contains(subdomain["description"].(string), "first inferred tenant-gateway endpoint") || !strings.Contains(subdomain["description"].(string), "inferred SSO redirect URI") {
+		t.Fatalf("expected non-sensitive SUBDOMAIN package variable, got %#v", subdomain)
 	}
-	if _, exists := hostName["sensitive"]; exists {
-		t.Fatalf("HOST_NAME must not be sensitive, got %#v", hostName)
+	if _, exists := subdomain["sensitive"]; exists {
+		t.Fatalf("SUBDOMAIN must not be sensitive, got %#v", subdomain)
 	}
-	if _, exists := hostName["prompt"]; exists {
-		t.Fatalf("HOST_NAME must not prompt, got %#v", hostName)
+	if _, exists := subdomain["prompt"]; exists {
+		t.Fatalf("SUBDOMAIN must not prompt, got %#v", subdomain)
 	}
 	if variablesByName["WORKER_DOMAIN"] == nil || variablesByName["ADDITIONAL_NETWORK_ALLOW"] == nil || variablesByName["API_KEY"] == nil {
 		t.Fatalf("expected automatic, environment, and secret variables to coexist, got %#v", variablesByName)
@@ -1589,8 +1589,8 @@ configs:
 			t.Fatalf("expected uds-package.yaml to contain %q\n%s", want, udsPackage)
 		}
 	}
-	if strings.Contains(udsPackage, "composeBridge.hostName") {
-		t.Fatalf("explicit expose host and its inferred redirect URI must not reference HOST_NAME\n%s", udsPackage)
+	if strings.Contains(udsPackage, "composeBridge.subdomain") {
+		t.Fatalf("explicit expose host and its inferred redirect URI must not reference SUBDOMAIN\n%s", udsPackage)
 	}
 
 	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
@@ -1639,15 +1639,15 @@ services:
 	if !strings.Contains(udsPackage, "service: web") {
 		t.Fatalf("expected published web service to be auto-exposed")
 	}
-	if !strings.Contains(udsPackage, "host: '{{ include \"composeBridge.hostName\" . }}'") {
-		t.Fatalf("expected first inferred host to use the effective host name helper\n%s", udsPackage)
+	if !strings.Contains(udsPackage, "host: '{{ include \"composeBridge.subdomain\" . }}'") {
+		t.Fatalf("expected first inferred host to use the effective subdomain helper\n%s", udsPackage)
 	}
 	if strings.Contains(udsPackage, "service: db") {
 		t.Fatalf("did not expect internal-only db service to be auto-exposed")
 	}
 }
 
-func TestWritePackageUsesEffectiveHostNameOnlyForFirstInferredHost(t *testing.T) {
+func TestWritePackageUsesEffectiveSubdomainOnlyForFirstInferredHost(t *testing.T) {
 	t.Parallel()
 
 	input := []byte(`name: demo
@@ -1679,8 +1679,8 @@ services:
 	if len(exposes) != 2 {
 		t.Fatalf("expose rules = %#v, want two", exposes)
 	}
-	if got := mustMap(t, exposes[0])["host"]; got != `{{ include "composeBridge.hostName" . }}` {
-		t.Fatalf("first inferred host = %#v, want effective host name helper", got)
+	if got := mustMap(t, exposes[0])["host"]; got != `{{ include "composeBridge.subdomain" . }}` {
+		t.Fatalf("first inferred host = %#v, want effective subdomain helper", got)
 	}
 	additionalExpose := mustMap(t, exposes[1])
 	if got, want := additionalExpose["host"], additionalExpose["service"]; got != want {
@@ -2097,7 +2097,7 @@ services:
 	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
 		"service: web",
-		"host: '{{ include \"composeBridge.hostName\" . }}'",
+		"host: '{{ include \"composeBridge.subdomain\" . }}'",
 		"gateway: tenant",
 		"port: 8080",
 		"app.kubernetes.io/name: web",
@@ -2135,7 +2135,7 @@ services:
 	for _, want := range []string{
 		"clientId: uds-compose-{{ .Release.Namespace }}",
 		"name: Myapp Login",
-		"https://{{ include \"composeBridge.hostName\" . }}.{{ .Values.uds.domain }}/*",
+		"https://{{ include \"composeBridge.subdomain\" . }}.{{ .Values.uds.domain }}/*",
 		"enableAuthserviceSelector",
 		"app.kubernetes.io/name: web",
 	} {
@@ -2229,7 +2229,7 @@ services:
 	if !strings.Contains(udsPackage, "name: Myapp Login") {
 		t.Fatalf("expected inferred name\n%s", udsPackage)
 	}
-	if !strings.Contains(udsPackage, "https://{{ include \"composeBridge.hostName\" . }}.{{ .Values.uds.domain }}/*") {
+	if !strings.Contains(udsPackage, "https://{{ include \"composeBridge.subdomain\" . }}.{{ .Values.uds.domain }}/*") {
 		t.Fatalf("expected inferred redirectUris\n%s", udsPackage)
 	}
 }
@@ -2317,7 +2317,7 @@ services:
 		}
 		previous = index
 	}
-	if strings.Contains(udsPackage, "https://{{ include \"composeBridge.hostName\" . }}.{{ .Values.uds.domain }}/*") {
+	if strings.Contains(udsPackage, "https://{{ include \"composeBridge.subdomain\" . }}.{{ .Values.uds.domain }}/*") {
 		t.Fatalf("did not expect inferred redirect URI when redirectUris is supplied\n%s", udsPackage)
 	}
 }
@@ -3222,7 +3222,7 @@ services:
 	}
 }
 
-func TestGeneratedChartUsesNamespaceAndHostNameForIndependentReleases(t *testing.T) {
+func TestGeneratedChartUsesNamespaceAndSubdomainForIndependentReleases(t *testing.T) {
 	udsPath, err := exec.LookPath("uds")
 	if err != nil {
 		t.Skip("uds not installed")
@@ -3271,27 +3271,27 @@ networks:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 	chartDir := filepath.Join(outDir, "chart")
-	renderChartResult := func(namespace, hostName string) ([]byte, error) {
+	renderChartResult := func(namespace, subdomain string) ([]byte, error) {
 		t.Helper()
 		args := []string{"zarf", "tools", "helm", "template", "shop", chartDir, "--namespace", namespace}
-		if hostName != "" {
-			args = append(args, "--set", "uds.hostName="+hostName)
+		if subdomain != "" {
+			args = append(args, "--set", "uds.subdomain="+subdomain)
 		}
 		output, renderErr := exec.Command(udsPath, args...).CombinedOutput()
 		return output, renderErr
 	}
-	renderChart := func(namespace, hostName string) []byte {
+	renderChart := func(namespace, subdomain string) []byte {
 		t.Helper()
-		output, renderErr := renderChartResult(namespace, hostName)
+		output, renderErr := renderChartResult(namespace, subdomain)
 		if renderErr != nil {
-			t.Fatalf("helm template --namespace %s --set uds.hostName=%s: %v\n%s", namespace, hostName, renderErr, output)
+			t.Fatalf("helm template --namespace %s --set uds.subdomain=%s: %v\n%s", namespace, subdomain, renderErr, output)
 		}
 		return output
 	}
 
 	tenantA := renderChart("tenant-a", "")
 	tenantB := renderChart("tenant-b", "")
-	tenantAWithHostName := renderChart("tenant-a", "shared-app")
+	tenantAWithSubdomain := renderChart("tenant-a", "shared-app")
 	if repeated := renderChart("tenant-a", ""); !bytes.Equal(tenantA, repeated) {
 		t.Fatal("repeated rendering in the same namespace must be deterministic")
 	}
@@ -3356,9 +3356,9 @@ networks:
 
 	identitiesA := validateRelease("tenant-a", "tenant-a", tenantA)
 	identitiesB := validateRelease("tenant-b", "tenant-b", tenantB)
-	identitiesAWithHostName := validateRelease("tenant-a", "shared-app", tenantAWithHostName)
-	if !reflect.DeepEqual(identitiesAWithHostName, identitiesA) {
-		t.Fatalf("HOST_NAME changed rendered resource identities: got %#v, want %#v", identitiesAWithHostName, identitiesA)
+	identitiesAWithSubdomain := validateRelease("tenant-a", "shared-app", tenantAWithSubdomain)
+	if !reflect.DeepEqual(identitiesAWithSubdomain, identitiesA) {
+		t.Fatalf("SUBDOMAIN changed rendered resource identities: got %#v, want %#v", identitiesAWithSubdomain, identitiesA)
 	}
 	for identity := range identitiesA {
 		if _, collides := identitiesB[identity]; collides {
@@ -3366,21 +3366,21 @@ networks:
 		}
 	}
 
-	invalidHostNames := []string{
+	invalidSubdomains := []string{
 		"UPPERCASE",
 		"has_underscore",
 		"-leading",
 		"trailing-",
 		strings.Repeat("a", 64),
 	}
-	for _, hostName := range invalidHostNames {
-		t.Run("invalid host name "+hostName, func(t *testing.T) {
-			output, renderErr := renderChartResult("tenant-a", hostName)
+	for _, subdomain := range invalidSubdomains {
+		t.Run("invalid subdomain "+subdomain, func(t *testing.T) {
+			output, renderErr := renderChartResult("tenant-a", subdomain)
 			if renderErr == nil {
-				t.Fatalf("helm template unexpectedly accepted HOST_NAME %q\n%s", hostName, output)
+				t.Fatalf("helm template unexpectedly accepted SUBDOMAIN %q\n%s", subdomain, output)
 			}
-			if !strings.Contains(string(output), "effective HOST_NAME must be a DNS-1123 label") || !strings.Contains(string(output), fmt.Sprintf("got %q", hostName)) {
-				t.Fatalf("helm template error for HOST_NAME %q was not actionable:\n%s", hostName, output)
+			if !strings.Contains(string(output), "effective SUBDOMAIN must be a DNS-1123 label") || !strings.Contains(string(output), fmt.Sprintf("got %q", subdomain)) {
+				t.Fatalf("helm template error for SUBDOMAIN %q was not actionable:\n%s", subdomain, output)
 			}
 		})
 	}
@@ -3439,7 +3439,7 @@ services:
 	for _, name := range []string{
 		"API_CPU_REQUEST", "API_MEMORY_REQUEST", "API_CPU_LIMIT", "API_MEMORY_LIMIT",
 		"WORKER_CPU_REQUEST", "WORKER_MEMORY_REQUEST", "WORKER_CPU_LIMIT", "WORKER_MEMORY_LIMIT",
-		"API_LOG_LEVEL", "HOST_NAME", "DOMAIN", "ADDITIONAL_NETWORK_ALLOW",
+		"API_LOG_LEVEL", "SUBDOMAIN", "DOMAIN", "ADDITIONAL_NETWORK_ALLOW",
 	} {
 		if !strings.Contains(zarfValues, "###ZARF_VAR_"+name+"###") {
 			t.Fatalf("expected shared Zarf values to contain %s\n%s", name, zarfValues)
@@ -3662,7 +3662,7 @@ secrets:
 
 	configuration := readFile(t, filepath.Join(outDir, "docs", "configuration.md"))
 	for _, want := range []string{
-		"| `HOST_NAME` | Hostname for the first inferred tenant-gateway endpoint and inferred SSO redirect URI; empty uses the Helm release namespace | — | false |",
+		"| `SUBDOMAIN` | Subdomain for the first inferred tenant-gateway endpoint and inferred SSO redirect URI; empty uses the Helm release namespace | — | false |",
 		"| `DOMAIN` | Cluster domain used by generated application endpoints | uds.dev | false |",
 		"| `ADDITIONAL_NETWORK_ALLOW` | Additional UDS network allow rules supplied as a YAML array | [] | false |",
 		"| `API_KEY` | Value for Compose secret api-key | — | true |",
@@ -4587,15 +4587,15 @@ func TestWritePackageRejectsInvalidEnvironmentExternalization(t *testing.T) {
 			wantErr: `compose secret "domain" generates Zarf variable "DOMAIN", which conflicts with automatic package variable "DOMAIN"`,
 		},
 		{
-			name: "host name secret variable collision",
+			name: "subdomain secret variable collision",
 			app: model.App{
 				Package:  model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
 				Services: []model.Service{{Name: "api", Image: "ghcr.io/acme/api:1.0.0"}},
 				Secrets: map[string]model.Secret{
-					"host-name": {Name: "host-name"},
+					"subdomain": {Name: "subdomain"},
 				},
 			},
-			wantErr: `compose secret "host-name" generates Zarf variable "HOST_NAME", which conflicts with automatic package variable "HOST_NAME"`,
+			wantErr: `compose secret "subdomain" generates Zarf variable "SUBDOMAIN", which conflicts with automatic package variable "SUBDOMAIN"`,
 		},
 		{
 			name: "compose config map collision",

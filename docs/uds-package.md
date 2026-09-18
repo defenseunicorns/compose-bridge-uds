@@ -20,7 +20,7 @@ Service environment values are exposed as non-sensitive Zarf variables and rende
 
 Every package also exposes:
 
-- `HOST_NAME` for the first inferred public host.
+- `SUBDOMAIN` for the first inferred public host.
 - `DOMAIN` for generated endpoints.
 - `ADDITIONAL_NETWORK_ALLOW` for deploy-time UDS network rules.
 
@@ -28,9 +28,9 @@ The bridge writes these deploy-time values to `out/values/values.yaml` as `###ZA
 
 ## Inferred behavior
 
-- **Expose:** Services with published `ports:` are exposed on the tenant gateway. When the first expose rule omits `host`, it uses `HOST_NAME` when set and otherwise the Helm release namespace; an explicit host remains literal. For multi-port services, the bridge prefers Compose `app_protocol` or `name` values indicating web traffic, then falls back to the first published port.
+- **Expose:** Services with published `ports:` are exposed on the tenant gateway. When the first expose rule omits `host`, it uses `SUBDOMAIN` when set and otherwise the Helm release namespace; an explicit host remains literal. For multi-port services, the bridge prefers Compose `app_protocol` or `name` values indicating web traffic, then falls back to the first published port.
 - **Network allow:** Intra-namespace ingress and egress rules are always included so services in the namespace can communicate. Static `x-uds.spec.network.allow` entries follow inferred rules, and deploy-time `ADDITIONAL_NETWORK_ALLOW` entries are appended last.
-- **SSO:** A Keycloak client is generated for the first exposed service and omitted when no services are exposed. Its default name is `<Package Name> Login` and its client ID is `uds-compose-<release-namespace>`. Its inferred redirect URI uses the first endpoint's effective hostname and `DOMAIN`, which defaults to `uds.dev`.
+- **SSO:** A Keycloak client is generated for the first exposed service and omitted when no services are exposed. Its default name is `<Package Name> Login` and its client ID is `uds-compose-<release-namespace>`. Its inferred redirect URI uses the first endpoint's effective subdomain and `DOMAIN`, which defaults to `uds.dev`.
 - **Policy exemptions:** Services requiring UDS policy exceptions produce `chart/templates/uds-exemption.yaml`.
 - **Monitoring:** Metrics monitors are inferred from ports named `metrics` or `prometheus`, common exporter ports, and `METRICS_PORT` or `PROMETHEUS_PORT` environment variables when they match a declared TCP port. Set `x-uds.spec.monitor` to take complete control of monitoring, including `x-uds.spec.monitor: []` to disable inference.
 - **Development dependencies:** Services referenced only by `depends_on` entries with `required: false` are omitted along with resources used exclusively by them.
