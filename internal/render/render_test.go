@@ -1555,7 +1555,7 @@ configs:
 	}
 
 	configMap := readFile(t, filepath.Join(outDir, "chart", "templates", "configmap-app-config.yaml"))
-	for _, want := range []string{`{{ index .Values.configs "appConfig" | indent 8 }}`, `uds.dev/pod-reload: "true"`} {
+	for _, want := range []string{`{{ dict "app-config" (index .Values.configs "appConfig") | toYaml | indent 4 }}`, `uds.dev/pod-reload: "true"`} {
 		if !strings.Contains(configMap, want) {
 			t.Fatalf("expected configmap to contain %q\n%s", want, configMap)
 		}
@@ -1634,7 +1634,7 @@ configs:
 
 	configMap := readFile(t, filepath.Join(outDir, "chart", "templates", "configmap-startup-script.yaml"))
 	for _, want := range []string{
-		`{{ index .Values.configs "startupScript" | indent 8 }}`,
+		`{{ dict "startup-script" (index .Values.configs "startupScript") | toYaml | indent 4 }}`,
 		`uds.dev/pod-reload: "true"`,
 	} {
 		if !strings.Contains(configMap, want) {
@@ -1699,8 +1699,130 @@ configs:
 		t.Fatalf("helm template override: %v\n%s", err, rendered)
 	}
 	renderedConfigMap := findYAMLDocumentByKind(t, rendered, "ConfigMap")
-	if got := mustMap(t, renderedConfigMap["data"])["startup-script"]; got != strings.TrimSuffix(overrideContent, "\n") {
+	if got := mustMap(t, renderedConfigMap["data"])["startup-script"]; got != overrideContent {
 		t.Fatalf("rendered startup script = %#v, want override content", got)
+	}
+}
+
+func TestWritePackagePreservesInlineConfigTrailingNewline(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  app:
+    image: example/app
+    configs:
+      - source: settings
+configs:
+  settings:
+    content: |
+      value
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPath, err := exec.LookPath("uds")
+	if err != nil {
+		t.Skip("uds CLI is required for Helm rendering assertions")
+	}
+	rendered, err := exec.Command(udsPath, "zarf", "tools", "helm", "template", "demo", filepath.Join(outDir, "chart")).CombinedOutput()
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, rendered)
+	}
+
+	configMap := findYAMLDocumentByKind(t, rendered, "ConfigMap")
+	if got := mustMap(t, configMap["data"])["settings"]; got != "value\n" {
+		t.Fatalf("rendered content = %#v, want %q", got, "value\n")
+	}
+}
+
+func TestWritePackagePreservesInlineConfigTrailingNewlineBeforeFollowingYAML(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  app:
+    image: example/app
+    configs:
+      - source: settings
+configs:
+  settings:
+    content: |
+      value
+x-after-config:
+  purpose: verify the config block is not at the end of the document
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPath, err := exec.LookPath("uds")
+	if err != nil {
+		t.Skip("uds CLI is required for Helm rendering assertions")
+	}
+	rendered, err := exec.Command(udsPath, "zarf", "tools", "helm", "template", "demo", filepath.Join(outDir, "chart")).CombinedOutput()
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, rendered)
+	}
+
+	configMap := findYAMLDocumentByKind(t, rendered, "ConfigMap")
+	if got := mustMap(t, configMap["data"])["settings"]; got != "value\n" {
+		t.Fatalf("rendered content = %#v, want %q", got, "value\n")
+	}
+}
+
+func TestWritePackagePreservesInlineConfigTrailingNewlineBeforeBlankLineAndFollowingYAML(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  app:
+    image: example/app
+    configs:
+      - source: settings
+configs:
+  settings:
+    content: |
+      value
+
+x-after-config:
+  purpose: verify a blank line before following YAML is not added to the config
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPath, err := exec.LookPath("uds")
+	if err != nil {
+		t.Skip("uds CLI is required for Helm rendering assertions")
+	}
+	rendered, err := exec.Command(udsPath, "zarf", "tools", "helm", "template", "demo", filepath.Join(outDir, "chart")).CombinedOutput()
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, rendered)
+	}
+
+	configMap := findYAMLDocumentByKind(t, rendered, "ConfigMap")
+	if got := mustMap(t, configMap["data"])["settings"]; got != "value\n" {
+		t.Fatalf("rendered content = %#v, want %q", got, "value\n")
 	}
 }
 

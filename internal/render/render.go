@@ -738,7 +738,7 @@ func writeConfigMapTemplate(path string, app model.App, config model.Config, val
 	}
 	placeholderLine := "    " + config.Name + ": " + placeholder
 	templateBlock := fmt.Sprintf(
-		"    # Helm value: configs.%s; Zarf variable: %s\n    %s: |-\n{{ index .Values.configs %q | indent 8 }}",
+		"    # Helm value: configs.%s; Zarf variable: %s\n{{ dict %q (index .Values.configs %q) | toYaml | indent 4 }}",
 		valuesKey,
 		contentVariable,
 		config.Name,
@@ -1019,7 +1019,7 @@ func writeZarfConfig(
 		if !config.External {
 			variables = append(variables, zarfVariable{
 				Name:        variable.Content,
-				Description: fmt.Sprintf("Content for compose config %s (Helm value configs.%s)", configName, variable.ValuesKey),
+				Description: fmt.Sprintf("Content for Compose config %s (Helm value configs.%s)", configName, variable.ValuesKey),
 				Default:     stringPointer(config.Content),
 				AutoIndent:  true,
 			})

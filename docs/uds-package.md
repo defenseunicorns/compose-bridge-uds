@@ -14,7 +14,17 @@ For UDS Registry publishing, generated Zarf metadata includes the standard `dev.
 
 For services with `build:`, the bridge also writes `out/build.compose.yaml`. Zarf `onCreate` actions use Buildx Bake to build those services into OCI archives under `out/image-archives/`, and the component's `imageArchives` entries add them to the package.
 
-Package-owned secrets are rendered from chart values rather than baked into templates. Package-external secrets carry only non-sensitive Kubernetes Secret name and key variables; the chart neither includes their values nor creates their Secret objects. Inline Compose config content is exposed both as a non-sensitive Zarf variable such as `APP_CONFIG` and as a camel-cased Helm value such as `configs.appConfig`; the Compose content supplies the default. External Compose configs instead carry non-sensitive Kubernetes ConfigMap name and key variables and do not create ConfigMaps. Service environment values are exposed as non-sensitive Zarf variables and rendered into per-service ConfigMaps. Each service's CPU and memory requests and limits are also exposed independently, with Compose reservations and limits supplying deployment defaults. Every package also exposes `DOMAIN` for generated endpoints and `ADDITIONAL_NETWORK_ALLOW` for deploy-time UDS network rules. The bridge writes `out/values/values.yaml` with `###ZARF_VAR_*###` placeholders for these deploy-time values, references it through `charts[].valuesFiles`, and retains their defaults, prompts, indentation, and sensitivity settings in the Zarf package's `variables:`.
+Generated package configuration follows these conventions:
+
+- Package-owned secrets are rendered from chart values rather than baked into templates.
+- Package-external secrets expose only non-sensitive Kubernetes Secret name and key variables; the chart neither includes their values nor creates their Secret objects.
+- Inline Compose config content is exposed as both a non-sensitive Zarf variable such as `APP_CONFIG` and a camel-cased Helm value such as `configs.appConfig`. The Compose content supplies the default.
+- External Compose configs expose non-sensitive Kubernetes ConfigMap name and key variables and do not create ConfigMaps.
+- Service environment values are exposed as non-sensitive Zarf variables and rendered into per-service ConfigMaps.
+- CPU and memory requests and limits are exposed independently, with Compose reservations and limits supplying deployment defaults.
+- Every package exposes `DOMAIN` for generated endpoints and `ADDITIONAL_NETWORK_ALLOW` for deploy-time UDS network rules.
+
+The bridge writes `out/values/values.yaml` with `###ZARF_VAR_*###` placeholders for these deploy-time values, references it through `charts[].valuesFiles`, and retains their defaults, prompts, indentation, and sensitivity settings in the Zarf package's `variables:`.
 
 ## Inferred behavior
 
