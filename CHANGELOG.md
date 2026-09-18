@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/defenseunicorns/compose-bridge-uds/compare/v1.1.0...v1.2.0) (2026-09-18)
+
+
+### Features
+
+* expose inline Compose configs as deploy-time values ([#138](https://github.com/defenseunicorns/compose-bridge-uds/issues/138)) ([cc90347](https://github.com/defenseunicorns/compose-bridge-uds/commit/cc903471af1571468159ef99f87ca15dcd339d51))
+* Use the Helm release namespace for generated namespaced resources ([#133](https://github.com/defenseunicorns/compose-bridge-uds/issues/133)) ([03e8605](https://github.com/defenseunicorns/compose-bridge-uds/commit/03e8605d6efed9b72d31c7738c4784873b272c5a))
+
 ## [1.1.0](https://github.com/defenseunicorns/compose-bridge-uds/compare/v1.0.1...v1.1.0) (2026-09-09)
 
 
