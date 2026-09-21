@@ -16,7 +16,7 @@
 | `stdin_open:`                                                    | Maps to the Kubernetes container `stdin` field.                                                                                                                                                                                                                                 |
 | `deploy.resources`                                               | CPU and memory `limits` map to Pod limits; CPU and memory `reservations` map to Pod requests. Compose values become deploy-time defaults.                                                                                                                                        |
 | `ports:`                                                         | Published ports are auto-exposed through the UDS tenant gateway. `expose:` (internal-only) ports are not exposed externally. Compose port declaration order is preserved, and long-syntax `name` and `app_protocol` hints are used to prefer web ports for multi-port services. |
-| `hostname:`                                                      | Preserved as the Kubernetes Pod hostname.                                                                                                                                                                                                                                       |
+| `hostname:`                                                       | Preserved as the Kubernetes Pod hostname.                                                                                                                                                                                                                                        |
 | `networks:`                                                      | Service membership is preserved with Pod labels and selector-scoped UDS ingress and egress rules when services use different network sets. The ordinary `bridge` driver is accepted. External networks warn because external peers cannot be inferred; aliases, addresses, and driver options remain unsupported. |
 | Bind mounts                                                      | Skipped during conversion with a warning because host paths do not have a portable Kubernetes equivalent. Use named `volumes:`, `configs:`, or `secrets:` for data that should be rendered into the chart.                                                                       |
 | `user:`, `privileged:`, `cap_add:`, `cap_drop:`, `security_opt:` | Reflected in the container security context where applicable. Settings that require UDS policy exceptions also generate a `chart/templates/uds-exemption.yaml`.                                                                                                                 |
@@ -74,7 +74,18 @@ Secret. Build secrets are unaffected by this runtime-secret behavior.
 
 ## Runtime configuration
 
-Compose configs with inline `content:` become package-owned ConfigMaps. A native
+Compose configs with inline `content:` become reloadable package-owned
+ConfigMaps. Each inline config also becomes a non-sensitive, auto-indented Zarf
+variable named from the normalized config name (for example, `app-config`
+becomes `APP_CONFIG`). The Compose content is the variable's default and is
+available directly to Helm consumers at a camel-cased value such as
+`configs.appConfig`. This permits multiline content to be replaced at
+deployment time without regenerating the package. Applications without inline
+configs do not receive a `configs` values section or config-content variables.
+
+The bridge preserves `mode` from long-form service config references as the
+projected ConfigMap volume's `defaultMode`. This allows executable configs such
+as initialization scripts to use `mode: 0755`. A native
 Compose `external: true` config is not created by the generated chart. Instead,
 the package declares non-sensitive `<CONFIG>_CONFIGMAP_NAME` and
 `<CONFIG>_CONFIGMAP_KEY` Zarf variables. The ConfigMap name variable defaults to
@@ -91,7 +102,7 @@ Every resolved service environment value becomes a non-sensitive Zarf variable n
 
 The bridge renders one `<service>-environment` ConfigMap for each service with environment values and attaches it to that service through `envFrom`. Empty environment ConfigMaps are omitted. Package-owned environment and Compose configuration ConfigMaps carry the `uds.dev/pod-reload: "true"` label so UDS can restart dependent Pods when their data changes. The bridge cannot add that label to external ConfigMaps. Direct Helm deployments do not provide UDS reload behavior.
 
-ConfigMaps do not protect sensitive data; use Compose `secrets:` for credentials and other confidential values. Environment names must use the Kubernetes-compatible `[-._a-zA-Z][-._a-zA-Z0-9]*` form; dots and hyphens are supported. Generated Zarf variable names must also be unique across all services, configs, secrets, and automatic package variables such as resource settings, `DOMAIN`, and `ADDITIONAL_NETWORK_ALLOW`; conversion fails rather than emitting an ambiguous package when names collide.
+ConfigMaps do not protect sensitive data; use Compose `secrets:` for credentials and other confidential values. Environment names must use the Kubernetes-compatible `[-._a-zA-Z][-._a-zA-Z0-9]*` form; dots and hyphens are supported. Generated Zarf variable names must also be unique across all services, configs, secrets, and automatic package variables such as resource settings, `SUBDOMAIN`, `DOMAIN`, and `ADDITIONAL_NETWORK_ALLOW`; conversion fails rather than emitting an ambiguous package when names collide. Inline config names must also produce unique camel-cased keys beneath `configs`.
 
 ## Deployment resources
 
@@ -99,20 +110,25 @@ Every generated service exposes four non-sensitive, non-prompting Zarf variables
 
 The four quantities are independent. A deployment can override one without restating the others. Empty quantities are omitted from the rendered Deployment; if all four are empty, the container has no `resources` field. CPU and memory values are rendered as quoted Kubernetes quantity strings.
 
-## Package domain
+## Package subdomain and domain
 
-Every generated package defines the non-sensitive Zarf variable `DOMAIN`, which defaults to `uds.dev`.
+Every generated package defines two non-sensitive Zarf variables for inferred public endpoints:
 
-The Helm release namespace defaults to the package name unless a different namespace is selected at deployment. Together, these defaults determine inferred endpoints and redirects:
+- `SUBDOMAIN` overrides the first inferred endpoint subdomain; when empty, the Helm release namespace is used.
+- `DOMAIN` defaults to `uds.dev` and supplies the domain suffix.
 
-| Value | If omitted | If set |
-|---|---|---|
-| First endpoint host | Helm release namespace | Preserved as written |
-| SSO redirect URI | `https://<endpoint-host>.<DOMAIN>/*` | Preserved as written |
+For a package named `hello-world` with `DOMAIN=uds.dev`, common deployment patterns produce:
 
-For example, a package named `hello-world` with no overrides uses the `hello-world` namespace, the endpoint `hello-world.uds.dev`, and the SSO redirect URI `https://hello-world.uds.dev/*`.
+| Scenario | Namespace | `SUBDOMAIN` | Public endpoint | Inferred SSO redirect URI |
+|---|---|---|---|---|
+| Default deployment | `hello-world` | unset | `https://hello-world.uds.dev` | `https://hello-world.uds.dev/*` |
+| Team 1 copy | `hello-world-team1` | unset | `https://hello-world-team1.uds.dev` | `https://hello-world-team1.uds.dev/*` |
+| Team 2 copy | `hello-world-team2` | unset | `https://hello-world-team2.uds.dev` | `https://hello-world-team2.uds.dev/*` |
+| Public subdomain differs from namespace | `hello-world-team3` | `hello-world-team3-public` | `https://hello-world-team3-public.uds.dev` | `https://hello-world-team3-public.uds.dev/*` |
 
-`DOMAIN` is package configuration, not container configuration. The bridge does not inject it into application containers or give special meaning to a Compose environment variable named `DOMAIN`. Applications that need their public origin must continue to declare the setting expected by the image, such as `PUBLIC_URL`, `ROOT_URL`, or `APP_ORIGIN`, in Compose.
+The namespace controls placement and the SSO client ID. `SUBDOMAIN` only changes the first inferred host and redirect; it does not rename resources. Explicit `x-uds` values take precedence.
+
+`SUBDOMAIN` and `DOMAIN` configure the generated UDS endpoint, not the application itself. If the application needs its public URL, set the environment variable it expects, such as `PUBLIC_URL`, `ROOT_URL`, or `APP_ORIGIN`.
 
 ## Deploy-time network access
 

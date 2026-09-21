@@ -20,6 +20,7 @@ services:
     configs:
       - source: app_config
         target: /app/config.yml
+        mode: 0444
     secrets:
       - source: app_secret
         target: app-secret

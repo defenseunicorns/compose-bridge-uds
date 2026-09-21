@@ -1272,12 +1272,21 @@ func parseServiceConfigs(raw []types.ServiceConfigObjConfig, aliases map[string]
 			return nil, fmt.Errorf("unknown top-level config %q", sourceRaw)
 		}
 		target := strings.TrimSpace(entry.Target)
+		var mode *int32
+		if entry.Mode != nil {
+			value := int64(*entry.Mode)
+			if value < 0 || value > 0o777 {
+				return nil, fmt.Errorf("config %q mode %s must be between 0000 and 0777", sourceRaw, entry.Mode.String())
+			}
+			converted := int32(value)
+			mode = &converted
+		}
 		key := source + "::" + target
 		if _, exists := seen[key]; exists {
 			continue
 		}
 		seen[key] = struct{}{}
-		refs = append(refs, model.FileRef{Source: source, Target: target})
+		refs = append(refs, model.FileRef{Source: source, Target: target, Mode: mode})
 	}
 	return refs, nil
 }

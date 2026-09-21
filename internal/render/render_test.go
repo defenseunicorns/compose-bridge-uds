@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -1443,7 +1444,7 @@ services:
 	}
 }
 
-func TestWritePackageAddsDomainPackageInterface(t *testing.T) {
+func TestWritePackageAddsEndpointPackageInterface(t *testing.T) {
 	t.Parallel()
 
 	input := []byte(`name: worker
@@ -1476,6 +1477,9 @@ secrets:
 	if got := udsValues["domain"]; got != "uds.dev" {
 		t.Fatalf("expected default UDS domain, got %#v", got)
 	}
+	if got := udsValues["subdomain"]; got != "" {
+		t.Fatalf("expected empty default UDS subdomain, got %#v", got)
+	}
 	workerEnvironment := mustMap(t, mustMap(t, chartValues["environment"])["worker"])
 	if got := workerEnvironment["DOMAIN"]; got != "internal.example" {
 		t.Fatalf("expected Compose DOMAIN environment value to remain ordinary configuration, got %#v", got)
@@ -1489,7 +1493,8 @@ secrets:
 
 	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
 	for _, want := range []string{
-		"uds:\n    domain: \"###ZARF_VAR_DOMAIN###\"",
+		"domain: \"###ZARF_VAR_DOMAIN###\"",
+		"subdomain: \"###ZARF_VAR_SUBDOMAIN###\"",
 		"###ZARF_VAR_WORKER_DOMAIN###",
 		"###ZARF_VAR_API_KEY###",
 		"###ZARF_VAR_ADDITIONAL_NETWORK_ALLOW###",
@@ -1518,6 +1523,16 @@ secrets:
 	}
 	if _, exists := domain["prompt"]; exists {
 		t.Fatalf("DOMAIN must not prompt, got %#v", domain)
+	}
+	subdomain := variablesByName["SUBDOMAIN"]
+	if subdomain == nil || subdomain["default"] != "" || !strings.Contains(subdomain["description"].(string), "first inferred tenant-gateway endpoint") || !strings.Contains(subdomain["description"].(string), "inferred SSO redirect URI") {
+		t.Fatalf("expected non-sensitive SUBDOMAIN package variable, got %#v", subdomain)
+	}
+	if _, exists := subdomain["sensitive"]; exists {
+		t.Fatalf("SUBDOMAIN must not be sensitive, got %#v", subdomain)
+	}
+	if _, exists := subdomain["prompt"]; exists {
+		t.Fatalf("SUBDOMAIN must not prompt, got %#v", subdomain)
 	}
 	if variablesByName["WORKER_DOMAIN"] == nil || variablesByName["ADDITIONAL_NETWORK_ALLOW"] == nil || variablesByName["API_KEY"] == nil {
 		t.Fatalf("expected automatic, environment, and secret variables to coexist, got %#v", variablesByName)
@@ -1568,7 +1583,7 @@ configs:
 	}
 
 	configMap := readFile(t, filepath.Join(outDir, "chart", "templates", "configmap-app-config.yaml"))
-	for _, want := range []string{"key: value", `uds.dev/pod-reload: "true"`} {
+	for _, want := range []string{`{{ dict "app-config" (index .Values.configs "appConfig") | toYaml | indent 4 }}`, `uds.dev/pod-reload: "true"`} {
 		if !strings.Contains(configMap, want) {
 			t.Fatalf("expected configmap to contain %q\n%s", want, configMap)
 		}
@@ -1587,6 +1602,9 @@ configs:
 			t.Fatalf("expected uds-package.yaml to contain %q\n%s", want, udsPackage)
 		}
 	}
+	if strings.Contains(udsPackage, "composeBridge.subdomain") {
+		t.Fatalf("explicit expose host and its inferred redirect URI must not reference SUBDOMAIN\n%s", udsPackage)
+	}
 
 	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
 	for _, want := range []string{
@@ -1600,6 +1618,353 @@ configs:
 	}
 	if strings.Contains(zarfConfig, "manifests:") {
 		t.Fatalf("did not expect manifest-based zarf config\n%s", zarfConfig)
+	}
+}
+
+func TestWritePackageExposesInlineConfigThroughHelmAndZarfAndPreservesMode(t *testing.T) {
+	t.Parallel()
+
+	const defaultContent = "#!/usr/bin/env bash\necho '{{ application.value }}'\necho ${RUNTIME_VALUE}\n"
+	input := []byte(`name: floci
+services:
+  floci:
+    image: floci/floci:2.1.0-compat
+    configs:
+      - source: startup-script
+        target: /etc/localstack/init/ready.d/startup.sh
+        mode: 0755
+configs:
+  startup-script:
+    content: |
+      #!/usr/bin/env bash
+      echo '{{ application.value }}'
+      echo $${RUNTIME_VALUE}
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	if len(app.Services) != 1 || len(app.Services[0].Configs) != 1 || app.Services[0].Configs[0].Mode == nil {
+		t.Fatalf("expected one config reference with a mode, got %#v", app.Services)
+	}
+	if got := *app.Services[0].Configs[0].Mode; got != 0o755 {
+		t.Fatalf("config mode = %#o, want 0755", got)
+	}
+
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	chartValues := readYAMLMap(t, filepath.Join(outDir, "chart", "values.yaml"))
+	configs := mustMap(t, chartValues["configs"])
+	if got := configs["startupScript"]; got != defaultContent {
+		t.Fatalf("configs.startupScript = %#v, want %#v", got, defaultContent)
+	}
+
+	configMap := readFile(t, filepath.Join(outDir, "chart", "templates", "configmap-startup-script.yaml"))
+	for _, want := range []string{
+		`{{ dict "startup-script" (index .Values.configs "startupScript") | toYaml | indent 4 }}`,
+		`uds.dev/pod-reload: "true"`,
+	} {
+		if !strings.Contains(configMap, want) {
+			t.Fatalf("expected ConfigMap template to contain %q\n%s", want, configMap)
+		}
+	}
+	if strings.Contains(configMap, " tpl ") {
+		t.Fatalf("config content must not be interpreted as a Helm template\n%s", configMap)
+	}
+
+	deployment := readFile(t, filepath.Join(outDir, "chart", "templates", "deployment-floci.yaml"))
+	for _, want := range []string{
+		"name: config-startup-script-mode-755",
+		"mountPath: /etc/localstack/init/ready.d/startup.sh",
+		"subPath: startup-script",
+		"defaultMode: 493",
+	} {
+		if !strings.Contains(deployment, want) {
+			t.Fatalf("expected Deployment template to contain %q\n%s", want, deployment)
+		}
+	}
+
+	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
+	if !strings.Contains(zarfValues, "configs:\n    startupScript: |-\n        ###ZARF_VAR_STARTUP_SCRIPT###") {
+		t.Fatalf("expected nested Helm value to be wired to STARTUP_SCRIPT\n%s", zarfValues)
+	}
+	zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
+	variables, ok := zarfConfig["variables"].([]any)
+	if !ok {
+		t.Fatalf("expected Zarf variables, got %#v", zarfConfig["variables"])
+	}
+	var startupScript map[string]any
+	for _, raw := range variables {
+		variable := mustMap(t, raw)
+		if variable["name"] == "STARTUP_SCRIPT" {
+			startupScript = variable
+			break
+		}
+	}
+	if startupScript == nil || startupScript["default"] != defaultContent || startupScript["autoIndent"] != true {
+		t.Fatalf("unexpected STARTUP_SCRIPT variable: %#v", startupScript)
+	}
+	if _, exists := startupScript["sensitive"]; exists {
+		t.Fatalf("STARTUP_SCRIPT must not be sensitive: %#v", startupScript)
+	}
+
+	udsPath, err := exec.LookPath("uds")
+	if err != nil {
+		t.Skip("uds CLI is required for Helm rendering assertions")
+	}
+	overrideContent := "#!/usr/bin/env bash\nawslocal s3 mb s3://argo-workflows\necho '{{ still.literal }}'\n"
+	valuesPath := filepath.Join(t.TempDir(), "values.yaml")
+	valuesYAML, err := yamlv3.Marshal(map[string]any{"configs": map[string]any{"startupScript": overrideContent}})
+	if err != nil {
+		t.Fatalf("marshal Helm override: %v", err)
+	}
+	if err := os.WriteFile(valuesPath, valuesYAML, 0o644); err != nil {
+		t.Fatalf("write Helm override: %v", err)
+	}
+	rendered, err := exec.Command(udsPath, "zarf", "tools", "helm", "template", "floci", filepath.Join(outDir, "chart"), "--values", valuesPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("helm template override: %v\n%s", err, rendered)
+	}
+	renderedConfigMap := findYAMLDocumentByKind(t, rendered, "ConfigMap")
+	if got := mustMap(t, renderedConfigMap["data"])["startup-script"]; got != overrideContent {
+		t.Fatalf("rendered startup script = %#v, want override content", got)
+	}
+}
+
+func TestWritePackagePreservesInlineConfigTrailingNewline(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  app:
+    image: example/app
+    configs:
+      - source: settings
+configs:
+  settings:
+    content: |
+      value
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPath, err := exec.LookPath("uds")
+	if err != nil {
+		t.Skip("uds CLI is required for Helm rendering assertions")
+	}
+	rendered, err := exec.Command(udsPath, "zarf", "tools", "helm", "template", "demo", filepath.Join(outDir, "chart")).CombinedOutput()
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, rendered)
+	}
+
+	configMap := findYAMLDocumentByKind(t, rendered, "ConfigMap")
+	if got := mustMap(t, configMap["data"])["settings"]; got != "value\n" {
+		t.Fatalf("rendered content = %#v, want %q", got, "value\n")
+	}
+}
+
+func TestWritePackagePreservesInlineConfigTrailingNewlineBeforeFollowingYAML(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  app:
+    image: example/app
+    configs:
+      - source: settings
+configs:
+  settings:
+    content: |
+      value
+x-after-config:
+  purpose: verify the config block is not at the end of the document
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPath, err := exec.LookPath("uds")
+	if err != nil {
+		t.Skip("uds CLI is required for Helm rendering assertions")
+	}
+	rendered, err := exec.Command(udsPath, "zarf", "tools", "helm", "template", "demo", filepath.Join(outDir, "chart")).CombinedOutput()
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, rendered)
+	}
+
+	configMap := findYAMLDocumentByKind(t, rendered, "ConfigMap")
+	if got := mustMap(t, configMap["data"])["settings"]; got != "value\n" {
+		t.Fatalf("rendered content = %#v, want %q", got, "value\n")
+	}
+}
+
+func TestWritePackagePreservesInlineConfigTrailingNewlineBeforeBlankLineAndFollowingYAML(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: demo
+services:
+  app:
+    image: example/app
+    configs:
+      - source: settings
+configs:
+  settings:
+    content: |
+      value
+
+x-after-config:
+  purpose: verify a blank line before following YAML is not added to the config
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	udsPath, err := exec.LookPath("uds")
+	if err != nil {
+		t.Skip("uds CLI is required for Helm rendering assertions")
+	}
+	rendered, err := exec.Command(udsPath, "zarf", "tools", "helm", "template", "demo", filepath.Join(outDir, "chart")).CombinedOutput()
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, rendered)
+	}
+
+	configMap := findYAMLDocumentByKind(t, rendered, "ConfigMap")
+	if got := mustMap(t, configMap["data"])["settings"]; got != "value\n" {
+		t.Fatalf("rendered content = %#v, want %q", got, "value\n")
+	}
+}
+
+func TestWritePackageRendersInlineConfigNamesThatLookLikeYAMLScalars(t *testing.T) {
+	t.Parallel()
+
+	udsPath, err := exec.LookPath("uds")
+	if err != nil {
+		t.Skip("uds CLI is required for Helm rendering assertions")
+	}
+
+	for _, configName := range []string{"true", "null", "123"} {
+		t.Run(configName, func(t *testing.T) {
+			t.Parallel()
+
+			input := []byte(fmt.Sprintf(`name: demo
+services:
+  app:
+    image: example/app
+    configs:
+      - source: %q
+configs:
+  %q:
+    content: |
+      value
+`, configName, configName))
+
+			app, err := compose.LoadCanonicalYAML(input)
+			if err != nil {
+				t.Fatalf("LoadCanonicalYAML() error = %v", err)
+			}
+			outDir := t.TempDir()
+			if err := render.WritePackage(outDir, app); err != nil {
+				t.Fatalf("WritePackage() error = %v", err)
+			}
+
+			templatePath := filepath.Join(outDir, "chart", "templates", "configmap-"+configName+".yaml")
+			configMapTemplate := readFile(t, templatePath)
+			if strings.Contains(configMapTemplate, "__HELM_CONFIG_KEY__") {
+				t.Fatalf("temporary config key leaked into generated template\n%s", configMapTemplate)
+			}
+
+			rendered, err := exec.Command(udsPath, "zarf", "tools", "helm", "template", "demo", filepath.Join(outDir, "chart")).CombinedOutput()
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, rendered)
+			}
+
+			configMap := findYAMLDocumentByKind(t, rendered, "ConfigMap")
+			data := mustMap(t, configMap["data"])
+			if got := data[configName]; got != "value\n" {
+				t.Fatalf("rendered data[%q] = %#v, want %q", configName, got, "value\n")
+			}
+			if len(data) != 1 {
+				t.Fatalf("rendered ConfigMap data = %#v, want only key %q", data, configName)
+			}
+		})
+	}
+}
+
+func TestWritePackageRejectsInlineConfigVariableAndHelmKeyCollisions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name: "zarf variable",
+			input: `name: demo
+services:
+  app:
+    image: example/app
+    configs:
+      - source: domain
+configs:
+  domain:
+    content: example
+`,
+			want: `generates Zarf variable "DOMAIN"`,
+		},
+		{
+			name: "helm value",
+			input: `name: demo
+services:
+  app:
+    image: example/app
+    configs:
+      - source: app-config
+      - source: app.config
+configs:
+  app-config:
+    content: one
+  app.config:
+    content: two
+`,
+			want: "generate the same Helm value configs.appConfig",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app, err := compose.LoadCanonicalYAML([]byte(tt.input))
+			if err != nil {
+				t.Fatalf("LoadCanonicalYAML() error = %v", err)
+			}
+			err = render.WritePackage(t.TempDir(), app)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("WritePackage() error = %v, want substring %q", err, tt.want)
+			}
+		})
 	}
 }
 
@@ -1634,15 +1999,15 @@ services:
 	if !strings.Contains(udsPackage, "service: web") {
 		t.Fatalf("expected published web service to be auto-exposed")
 	}
-	if !strings.Contains(udsPackage, "host: '{{ .Release.Namespace }}'") {
-		t.Fatalf("expected first inferred host to use the Helm release namespace\n%s", udsPackage)
+	if !strings.Contains(udsPackage, "host: '{{ include \"composeBridge.subdomain\" . }}'") {
+		t.Fatalf("expected first inferred host to use the effective subdomain helper\n%s", udsPackage)
 	}
 	if strings.Contains(udsPackage, "service: db") {
 		t.Fatalf("did not expect internal-only db service to be auto-exposed")
 	}
 }
 
-func TestWritePackageUsesReleaseNamespaceOnlyForFirstInferredHost(t *testing.T) {
+func TestWritePackageUsesEffectiveSubdomainOnlyForFirstInferredHost(t *testing.T) {
 	t.Parallel()
 
 	input := []byte(`name: demo
@@ -1674,8 +2039,8 @@ services:
 	if len(exposes) != 2 {
 		t.Fatalf("expose rules = %#v, want two", exposes)
 	}
-	if got := mustMap(t, exposes[0])["host"]; got != "{{ .Release.Namespace }}" {
-		t.Fatalf("first inferred host = %#v, want Helm release namespace", got)
+	if got := mustMap(t, exposes[0])["host"]; got != `{{ include "composeBridge.subdomain" . }}` {
+		t.Fatalf("first inferred host = %#v, want effective subdomain helper", got)
 	}
 	additionalExpose := mustMap(t, exposes[1])
 	if got, want := additionalExpose["host"], additionalExpose["service"]; got != want {
@@ -2092,7 +2457,7 @@ services:
 	udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
 	for _, want := range []string{
 		"service: web",
-		"host: '{{ .Release.Namespace }}'",
+		"host: '{{ include \"composeBridge.subdomain\" . }}'",
 		"gateway: tenant",
 		"port: 8080",
 		"app.kubernetes.io/name: web",
@@ -2130,7 +2495,7 @@ services:
 	for _, want := range []string{
 		"clientId: uds-compose-{{ .Release.Namespace }}",
 		"name: Myapp Login",
-		"https://{{ .Release.Namespace }}.{{ .Values.uds.domain }}/*",
+		"https://{{ include \"composeBridge.subdomain\" . }}.{{ .Values.uds.domain }}/*",
 		"enableAuthserviceSelector",
 		"app.kubernetes.io/name: web",
 	} {
@@ -2224,7 +2589,7 @@ services:
 	if !strings.Contains(udsPackage, "name: Myapp Login") {
 		t.Fatalf("expected inferred name\n%s", udsPackage)
 	}
-	if !strings.Contains(udsPackage, "https://{{ .Release.Namespace }}.{{ .Values.uds.domain }}/*") {
+	if !strings.Contains(udsPackage, "https://{{ include \"composeBridge.subdomain\" . }}.{{ .Values.uds.domain }}/*") {
 		t.Fatalf("expected inferred redirectUris\n%s", udsPackage)
 	}
 }
@@ -2312,7 +2677,7 @@ services:
 		}
 		previous = index
 	}
-	if strings.Contains(udsPackage, "https://{{ .Release.Namespace }}.{{ .Values.uds.domain }}/*") {
+	if strings.Contains(udsPackage, "https://{{ include \"composeBridge.subdomain\" . }}.{{ .Values.uds.domain }}/*") {
 		t.Fatalf("did not expect inferred redirect URI when redirectUris is supplied\n%s", udsPackage)
 	}
 }
@@ -3260,7 +3625,7 @@ services:
 	}
 }
 
-func TestGeneratedChartUsesReleaseNamespaceForIndependentReleases(t *testing.T) {
+func TestGeneratedChartUsesNamespaceAndSubdomainForIndependentReleases(t *testing.T) {
 	udsPath, err := exec.LookPath("uds")
 	if err != nil {
 		t.Skip("uds not installed")
@@ -3309,22 +3674,32 @@ networks:
 		t.Fatalf("WritePackage() error = %v", err)
 	}
 	chartDir := filepath.Join(outDir, "chart")
-	renderChart := func(namespace string) []byte {
+	renderChartResult := func(namespace, subdomain string) ([]byte, error) {
 		t.Helper()
-		output, renderErr := exec.Command(udsPath, "zarf", "tools", "helm", "template", "shop", chartDir, "--namespace", namespace).CombinedOutput()
+		args := []string{"zarf", "tools", "helm", "template", "shop", chartDir, "--namespace", namespace}
+		if subdomain != "" {
+			args = append(args, "--set", "uds.subdomain="+subdomain)
+		}
+		output, renderErr := exec.Command(udsPath, args...).CombinedOutput()
+		return output, renderErr
+	}
+	renderChart := func(namespace, subdomain string) []byte {
+		t.Helper()
+		output, renderErr := renderChartResult(namespace, subdomain)
 		if renderErr != nil {
-			t.Fatalf("helm template --namespace %s: %v\n%s", namespace, renderErr, output)
+			t.Fatalf("helm template --namespace %s --set uds.subdomain=%s: %v\n%s", namespace, subdomain, renderErr, output)
 		}
 		return output
 	}
 
-	tenantA := renderChart("tenant-a")
-	tenantB := renderChart("tenant-b")
-	if repeated := renderChart("tenant-a"); !bytes.Equal(tenantA, repeated) {
+	tenantA := renderChart("tenant-a", "")
+	tenantB := renderChart("tenant-b", "")
+	tenantAWithSubdomain := renderChart("tenant-a", "shared-app")
+	if repeated := renderChart("tenant-a", ""); !bytes.Equal(tenantA, repeated) {
 		t.Fatal("repeated rendering in the same namespace must be deterministic")
 	}
 
-	validateRelease := func(namespace string, rendered []byte) map[string]struct{} {
+	validateRelease := func(namespace, expectedHost string, rendered []byte) map[string]struct{} {
 		t.Helper()
 		identities := map[string]struct{}{}
 		for _, document := range decodeYAMLDocuments(t, rendered) {
@@ -3366,8 +3741,8 @@ networks:
 				}
 			}
 			expose := network["expose"].([]any)
-			if got := mustMap(t, expose[0])["host"]; got != namespace {
-				t.Fatalf("inferred gateway host = %#v, want %q", got, namespace)
+			if got := mustMap(t, expose[0])["host"]; got != expectedHost {
+				t.Fatalf("inferred gateway host = %#v, want %q", got, expectedHost)
 			}
 			sso := spec["sso"].([]any)
 			client := mustMap(t, sso[0])
@@ -3375,19 +3750,42 @@ networks:
 				t.Fatalf("inferred SSO clientId = %#v, want namespace-qualified ID", got)
 			}
 			redirects := client["redirectUris"].([]any)
-			if got := redirects[0]; got != "https://"+namespace+".uds.dev/*" {
-				t.Fatalf("inferred SSO redirect URI = %#v, want namespace-qualified URI", got)
+			if got := redirects[0]; got != "https://"+expectedHost+".uds.dev/*" {
+				t.Fatalf("inferred SSO redirect URI = %#v, want effective-host URI", got)
 			}
 		}
 		return identities
 	}
 
-	identitiesA := validateRelease("tenant-a", tenantA)
-	identitiesB := validateRelease("tenant-b", tenantB)
+	identitiesA := validateRelease("tenant-a", "tenant-a", tenantA)
+	identitiesB := validateRelease("tenant-b", "tenant-b", tenantB)
+	identitiesAWithSubdomain := validateRelease("tenant-a", "shared-app", tenantAWithSubdomain)
+	if !reflect.DeepEqual(identitiesAWithSubdomain, identitiesA) {
+		t.Fatalf("SUBDOMAIN changed rendered resource identities: got %#v, want %#v", identitiesAWithSubdomain, identitiesA)
+	}
 	for identity := range identitiesA {
 		if _, collides := identitiesB[identity]; collides {
 			t.Fatalf("release resources collide across namespaces at %s", identity)
 		}
+	}
+
+	invalidSubdomains := []string{
+		"UPPERCASE",
+		"has_underscore",
+		"-leading",
+		"trailing-",
+		strings.Repeat("a", 64),
+	}
+	for _, subdomain := range invalidSubdomains {
+		t.Run("invalid subdomain "+subdomain, func(t *testing.T) {
+			output, renderErr := renderChartResult("tenant-a", subdomain)
+			if renderErr == nil {
+				t.Fatalf("helm template unexpectedly accepted SUBDOMAIN %q\n%s", subdomain, output)
+			}
+			if !strings.Contains(string(output), "effective SUBDOMAIN must be a DNS-1123 label") || !strings.Contains(string(output), fmt.Sprintf("got %q", subdomain)) {
+				t.Fatalf("helm template error for SUBDOMAIN %q was not actionable:\n%s", subdomain, output)
+			}
+		})
 	}
 }
 
@@ -3444,7 +3842,7 @@ services:
 	for _, name := range []string{
 		"API_CPU_REQUEST", "API_MEMORY_REQUEST", "API_CPU_LIMIT", "API_MEMORY_LIMIT",
 		"WORKER_CPU_REQUEST", "WORKER_MEMORY_REQUEST", "WORKER_CPU_LIMIT", "WORKER_MEMORY_LIMIT",
-		"API_LOG_LEVEL", "DOMAIN", "ADDITIONAL_NETWORK_ALLOW",
+		"API_LOG_LEVEL", "SUBDOMAIN", "DOMAIN", "ADDITIONAL_NETWORK_ALLOW",
 	} {
 		if !strings.Contains(zarfValues, "###ZARF_VAR_"+name+"###") {
 			t.Fatalf("expected shared Zarf values to contain %s\n%s", name, zarfValues)
@@ -3667,6 +4065,7 @@ secrets:
 
 	configuration := readFile(t, filepath.Join(outDir, "docs", "configuration.md"))
 	for _, want := range []string{
+		"| `SUBDOMAIN` | Subdomain for the first inferred tenant-gateway endpoint and inferred SSO redirect URI; empty uses the Helm release namespace | — | false |",
 		"| `DOMAIN` | Cluster domain used by generated application endpoints | uds.dev | false |",
 		"| `ADDITIONAL_NETWORK_ALLOW` | Additional UDS network allow rules supplied as a YAML array | [] | false |",
 		"| `API_KEY` | Value for Compose secret api-key | — | true |",
@@ -4589,6 +4988,17 @@ func TestWritePackageRejectsInvalidEnvironmentExternalization(t *testing.T) {
 				},
 			},
 			wantErr: `compose secret "domain" generates Zarf variable "DOMAIN", which conflicts with automatic package variable "DOMAIN"`,
+		},
+		{
+			name: "subdomain secret variable collision",
+			app: model.App{
+				Package:  model.Package{Name: "shop", Namespace: "shop", Version: "0.1.0"},
+				Services: []model.Service{{Name: "api", Image: "ghcr.io/acme/api:1.0.0"}},
+				Secrets: map[string]model.Secret{
+					"subdomain": {Name: "subdomain"},
+				},
+			},
+			wantErr: `compose secret "subdomain" generates Zarf variable "SUBDOMAIN", which conflicts with automatic package variable "SUBDOMAIN"`,
 		},
 		{
 			name: "compose config map collision",
