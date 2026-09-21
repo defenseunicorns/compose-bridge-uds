@@ -69,7 +69,7 @@ services:
 	printed := string(output)
 	for _, want := range []string{
 		`"server"`,
-		`"zarf.internal/bake-integration-server:0.1.0-uds.0"`,
+		`"zarf.internal/bake-integration-server:dev"`,
 		`"linux/amd64"`,
 		`"linux/arm64"`,
 		`"dest": "image-archives/server.tar"`,

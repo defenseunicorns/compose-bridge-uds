@@ -407,17 +407,6 @@ func loadProject(project types.Project, raw map[string]any, excludedServices map
 	}
 
 	markBoundarySecretsExternal(services, secrets, excludedSecretRefs)
-	if !packageCfg.VersionConfigured || packageCfg.Version == model.DevelopmentVersion {
-		packageCfg.UpstreamVersion = inferUpstreamVersion(services)
-		if !packageCfg.VersionConfigured {
-			packageCfg.Version = packageCfg.UpstreamVersion + "-uds.0"
-		}
-		for i := range services {
-			if services[i].Build != nil {
-				services[i].Image = builtImageReference(packageCfg, services[i].Name)
-			}
-		}
-	}
 	volumes, secrets, configs = retainReferencedResources(services, volumes, secrets, configs)
 	if err := validateExcludedPackageReferences(packageCfg, excludedAliases); err != nil {
 		return model.App{}, err
@@ -867,57 +856,9 @@ var (
 	udsVersionPattern      = regexp.MustCompile(`^(.+)-uds\.([0-9]+)$`)
 )
 
-func inferUpstreamVersion(services []model.Service) string {
-	if len(services) == 0 {
-		return model.DefaultUpstreamVersion
-	}
-
-	primary := services[0]
-	for _, service := range services {
-		if serviceHasPublishedPort(service) {
-			primary = service
-			break
-		}
-	}
-	if primary.Build != nil {
-		return model.DefaultUpstreamVersion
-	}
-	tag := imageTag(primary.Image)
-	if strings.EqualFold(tag, "latest") {
-		return model.DefaultUpstreamVersion
-	}
-	version, ok := normalizeUpstreamVersion(tag)
-	if !ok {
-		return model.DefaultUpstreamVersion
-	}
-	return version
-}
-
-func serviceHasPublishedPort(service model.Service) bool {
-	for _, port := range service.Ports {
-		if port.Published {
-			return true
-		}
-	}
-	return false
-}
-
-func imageTag(image string) string {
-	reference := strings.TrimSpace(image)
-	if digest := strings.Index(reference, "@"); digest >= 0 {
-		reference = reference[:digest]
-	}
-	lastSlash := strings.LastIndex(reference, "/")
-	lastColon := strings.LastIndex(reference, ":")
-	if lastColon <= lastSlash {
-		return ""
-	}
-	return reference[lastColon+1:]
-}
-
 func normalizeConfiguredPackageVersion(value string) (string, string, error) {
 	if value == model.DevelopmentVersion {
-		return model.DefaultUpstreamVersion, model.DevelopmentVersion, nil
+		return model.DevelopmentVersion, model.DevelopmentVersion, nil
 	}
 
 	if matches := udsVersionPattern.FindStringSubmatch(value); matches != nil {

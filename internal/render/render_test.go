@@ -40,7 +40,7 @@ services:
 	if len(app.Services) != 1 {
 		t.Fatalf("expected 1 service, got %d", len(app.Services))
 	}
-	if app.Services[0].Image != "zarf.internal/demo-api:0.1.0-uds.0" {
+	if app.Services[0].Image != "zarf.internal/demo-api:dev" {
 		t.Fatalf("expected build image reference to be internalized, got %q", app.Services[0].Image)
 	}
 	if app.Services[0].Build == nil {
@@ -159,7 +159,7 @@ services:
 	if err != nil {
 		t.Fatalf("expected build without image to be supported, got %v", err)
 	}
-	if got := app.Services[0].Image; got != "zarf.internal/demo-api:0.1.0-uds.0" {
+	if got := app.Services[0].Image; got != "zarf.internal/demo-api:dev" {
 		t.Fatalf("expected generated internal image, got %q", got)
 	}
 }
@@ -174,7 +174,7 @@ func TestLoadCanonicalGeneratesUDSPackageVersion(t *testing.T) {
 		packageVersion  string
 	}{
 		{
-			name: "published service is primary",
+			name: "image versions do not change development default",
 			input: `name: demo
 services:
   database:
@@ -186,8 +186,8 @@ services:
         published: "8080"
         protocol: tcp
 `,
-			upstreamVersion: "2.4.1",
-			packageVersion:  "2.4.1-uds.0",
+			upstreamVersion: "dev",
+			packageVersion:  "dev",
 		},
 		{
 			name: "short prerelease image tag",
@@ -196,29 +196,29 @@ services:
   cache:
     image: redis:7-alpine
 `,
-			upstreamVersion: "7.0.0-alpine",
-			packageVersion:  "7.0.0-alpine-uds.0",
+			upstreamVersion: "dev",
+			packageVersion:  "dev",
 		},
 		{
-			name: "latest tag falls back",
+			name: "latest tag uses development default",
 			input: `name: demo
 services:
   api:
     image: ghcr.io/acme/api:latest
 `,
-			upstreamVersion: "0.1.0",
-			packageVersion:  "0.1.0-uds.0",
+			upstreamVersion: "dev",
+			packageVersion:  "dev",
 		},
 		{
-			name: "local build falls back",
+			name: "local build uses development default",
 			input: `name: demo
 services:
   api:
     build:
       context: .
 `,
-			upstreamVersion: "0.1.0",
-			packageVersion:  "0.1.0-uds.0",
+			upstreamVersion: "dev",
+			packageVersion:  "dev",
 		},
 		{
 			name: "explicit UDS version is preserved",
@@ -247,7 +247,7 @@ services:
 			packageVersion:  "5.6.0-uds.0",
 		},
 		{
-			name: "development version preserves dev and infers app version",
+			name: "explicit development version applies to package and app",
 			input: `name: demo
 x-uds:
   metadata:
@@ -256,7 +256,7 @@ services:
   api:
     image: ghcr.io/acme/api:1.2.3
 `,
-			upstreamVersion: "1.2.3",
+			upstreamVersion: "dev",
 			packageVersion:  "dev",
 		},
 	}
@@ -680,7 +680,7 @@ services:
 		t.Fatalf("expected server image archive path, got %#v", archive["path"])
 	}
 	archiveImages, ok := archive["images"].([]any)
-	if !ok || len(archiveImages) != 1 || archiveImages[0] != "zarf.internal/demo-server:7.0.0-alpine-uds.0" {
+	if !ok || len(archiveImages) != 1 || archiveImages[0] != "zarf.internal/demo-server:dev" {
 		t.Fatalf("expected only the built image under imageArchives, got %#v", archive["images"])
 	}
 
@@ -3535,8 +3535,8 @@ services:
 	for _, want := range []string{
 		"apiVersion: v2",
 		"name: shop",
-		"version: 1.0.0-uds.0",
-		"appVersion: 1.0.0",
+		"version: 0.0.0-dev",
+		"appVersion: dev",
 	} {
 		if !strings.Contains(chartMeta, want) {
 			t.Fatalf("expected Chart.yaml to contain %q\n%s", want, chartMeta)
@@ -3561,7 +3561,8 @@ services:
 		"charts:",
 		"localPath: chart",
 		"name: shop",
-		"version: 1.0.0-uds.0",
+		"version: dev",
+		"version: 0.0.0-dev",
 	} {
 		if !strings.Contains(zarfConfig, want) {
 			t.Fatalf("expected zarf.yaml to contain %q\n%s", want, zarfConfig)
@@ -3607,8 +3608,8 @@ services:
 	if got := chartMetadata["version"]; got != "0.0.0-dev" {
 		t.Fatalf("Chart.yaml version = %#v, want 0.0.0-dev", got)
 	}
-	if got := chartMetadata["appVersion"]; got != "1.2.3" {
-		t.Fatalf("Chart.yaml appVersion = %#v, want 1.2.3", got)
+	if got := chartMetadata["appVersion"]; got != "dev" {
+		t.Fatalf("Chart.yaml appVersion = %#v, want dev", got)
 	}
 
 	zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
@@ -3622,6 +3623,49 @@ services:
 	chart := mustMap(t, charts[0])
 	if got := chart["version"]; got != "0.0.0-dev" {
 		t.Fatalf("zarf.yaml chart version = %#v, want 0.0.0-dev", got)
+	}
+}
+
+func TestWritePackageUsesExplicitReleaseVersions(t *testing.T) {
+	t.Parallel()
+
+	input := []byte(`name: example
+x-uds:
+  metadata:
+    version: 1.2.3
+services:
+  example:
+    image: example/example:9.8.7
+`)
+
+	app, err := compose.LoadCanonicalYAML(input)
+	if err != nil {
+		t.Fatalf("LoadCanonicalYAML() error = %v", err)
+	}
+	outDir := t.TempDir()
+	if err := render.WritePackage(outDir, app); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+
+	chartMetadata := readYAMLMap(t, filepath.Join(outDir, "chart", "Chart.yaml"))
+	if got := chartMetadata["version"]; got != "1.2.3-uds.0" {
+		t.Fatalf("Chart.yaml version = %#v, want 1.2.3-uds.0", got)
+	}
+	if got := chartMetadata["appVersion"]; got != "1.2.3" {
+		t.Fatalf("Chart.yaml appVersion = %#v, want 1.2.3", got)
+	}
+
+	zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
+	zarfMetadata := mustMap(t, zarfConfig["metadata"])
+	if got := zarfMetadata["version"]; got != "1.2.3-uds.0" {
+		t.Fatalf("zarf.yaml metadata.version = %#v, want 1.2.3-uds.0", got)
+	}
+	components := mustSlice(t, zarfConfig["components"])
+	component := mustMap(t, components[0])
+	charts := mustSlice(t, component["charts"])
+	chart := mustMap(t, charts[0])
+	if got := chart["version"]; got != "1.2.3-uds.0" {
+		t.Fatalf("zarf.yaml chart version = %#v, want 1.2.3-uds.0", got)
 	}
 }
 
