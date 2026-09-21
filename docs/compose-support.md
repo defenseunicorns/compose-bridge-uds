@@ -74,7 +74,18 @@ Secret. Build secrets are unaffected by this runtime-secret behavior.
 
 ## Runtime configuration
 
-Compose configs with inline `content:` become package-owned ConfigMaps. A native
+Compose configs with inline `content:` become reloadable package-owned
+ConfigMaps. Each inline config also becomes a non-sensitive, auto-indented Zarf
+variable named from the normalized config name (for example, `app-config`
+becomes `APP_CONFIG`). The Compose content is the variable's default and is
+available directly to Helm consumers at a camel-cased value such as
+`configs.appConfig`. This permits multiline content to be replaced at
+deployment time without regenerating the package. Applications without inline
+configs do not receive a `configs` values section or config-content variables.
+
+The bridge preserves `mode` from long-form service config references as the
+projected ConfigMap volume's `defaultMode`. This allows executable configs such
+as initialization scripts to use `mode: 0755`. A native
 Compose `external: true` config is not created by the generated chart. Instead,
 the package declares non-sensitive `<CONFIG>_CONFIGMAP_NAME` and
 `<CONFIG>_CONFIGMAP_KEY` Zarf variables. The ConfigMap name variable defaults to
@@ -91,7 +102,7 @@ Every resolved service environment value becomes a non-sensitive Zarf variable n
 
 The bridge renders one `<service>-environment` ConfigMap for each service with environment values and attaches it to that service through `envFrom`. Empty environment ConfigMaps are omitted. Package-owned environment and Compose configuration ConfigMaps carry the `uds.dev/pod-reload: "true"` label so UDS can restart dependent Pods when their data changes. The bridge cannot add that label to external ConfigMaps. Direct Helm deployments do not provide UDS reload behavior.
 
-ConfigMaps do not protect sensitive data; use Compose `secrets:` for credentials and other confidential values. Environment names must use the Kubernetes-compatible `[-._a-zA-Z][-._a-zA-Z0-9]*` form; dots and hyphens are supported. Generated Zarf variable names must also be unique across all services, configs, secrets, and automatic package variables such as resource settings, `SUBDOMAIN`, `DOMAIN`, and `ADDITIONAL_NETWORK_ALLOW`; conversion fails rather than emitting an ambiguous package when names collide.
+ConfigMaps do not protect sensitive data; use Compose `secrets:` for credentials and other confidential values. Environment names must use the Kubernetes-compatible `[-._a-zA-Z][-._a-zA-Z0-9]*` form; dots and hyphens are supported. Generated Zarf variable names must also be unique across all services, configs, secrets, and automatic package variables such as resource settings, `SUBDOMAIN`, `DOMAIN`, and `ADDITIONAL_NETWORK_ALLOW`; conversion fails rather than emitting an ambiguous package when names collide. Inline config names must also produce unique camel-cased keys beneath `configs`.
 
 ## Deployment resources
 
