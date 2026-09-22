@@ -444,7 +444,7 @@ func completeConversionReport(report *model.ConversionReport, project types.Proj
 		report.Inferred = append(report.Inferred, model.ConversionDecision{
 			Path:    "x-uds.metadata.version",
 			Value:   app.Package.Version,
-			Message: "Inferred the package version from the primary service image tag, falling back to the bridge default when necessary.",
+			Message: "Defaulted the package version to dev for the UDS development workflow.",
 		})
 	}
 
