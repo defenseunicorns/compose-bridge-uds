@@ -669,6 +669,7 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 
 	rootUDS, ok := asMap(raw["x-uds"])
 	if !ok {
+		warnForNonConventionalPackageVersion(config.Version)
 		return config, nil
 	}
 	keys := make([]string, 0, len(rootUDS))
@@ -770,6 +771,9 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 			}
 		}
 	}
+	if !config.VersionConfigured {
+		warnForNonConventionalPackageVersion(config.Version)
+	}
 
 	rawSpec, exists := rootUDS["spec"]
 	if !exists {
@@ -855,6 +859,7 @@ var (
 
 func normalizeConfiguredPackageVersion(value string) (string, string) {
 	if value == model.DevelopmentVersion {
+		warnForNonConventionalPackageVersion(value)
 		return model.DevelopmentVersion, model.DevelopmentVersion
 	}
 
@@ -865,12 +870,16 @@ func normalizeConfiguredPackageVersion(value string) (string, string) {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "warning: x-uds.metadata.version %q does not match <upstream>-uds.<sub-version>; preserving the supplied value\n", value)
+	warnForNonConventionalPackageVersion(value)
 	upstream, ok := normalizeUpstreamVersion(value)
 	if !ok {
 		upstream = value
 	}
 	return upstream, value
+}
+
+func warnForNonConventionalPackageVersion(value string) {
+	fmt.Fprintf(os.Stderr, "warning: x-uds.metadata.version %q does not match <upstream>-uds.<sub-version>; using the value unchanged\n", value)
 }
 
 func normalizeUpstreamVersion(value string) (string, bool) {

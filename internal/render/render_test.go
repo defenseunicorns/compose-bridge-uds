@@ -324,41 +324,52 @@ services:
 }
 
 func TestLoadCanonicalWarnsForNonConventionalPackageVersion(t *testing.T) {
-	input := []byte(`name: demo
-x-uds:
-  metadata:
-    version: 1.2.3
-services:
+	tests := []struct {
+		name        string
+		metadata    string
+		wantVersion string
+	}{
+		{name: "implicit development default", wantVersion: "dev"},
+		{name: "explicit development version", metadata: "x-uds:\n  metadata:\n    version: dev\n", wantVersion: "dev"},
+		{name: "explicit nonconventional version", metadata: "x-uds:\n  metadata:\n    version: 1.2.3\n", wantVersion: "1.2.3"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := []byte("name: demo\n" + tt.metadata + `services:
   api:
     image: ghcr.io/acme/api:1.0.0
 `)
 
-	originalStderr := os.Stderr
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("create stderr pipe: %v", err)
-	}
-	os.Stderr = writer
-	app, loadErr := compose.LoadCanonicalYAML(input)
-	os.Stderr = originalStderr
-	if closeErr := writer.Close(); closeErr != nil {
-		t.Fatalf("close stderr writer: %v", closeErr)
-	}
-	warning, readErr := io.ReadAll(reader)
-	if readErr != nil {
-		t.Fatalf("read stderr: %v", readErr)
-	}
-	if closeErr := reader.Close(); closeErr != nil {
-		t.Fatalf("close stderr reader: %v", closeErr)
-	}
-	if loadErr != nil {
-		t.Fatalf("LoadCanonicalYAML() error = %v", loadErr)
-	}
-	if got := app.Package.Version; got != "1.2.3" {
-		t.Fatalf("Package.Version = %q, want 1.2.3", got)
-	}
-	if want := `x-uds.metadata.version "1.2.3" does not match <upstream>-uds.<sub-version>; preserving the supplied value`; !strings.Contains(string(warning), want) {
-		t.Fatalf("expected warning %q, got %q", want, warning)
+			originalStderr := os.Stderr
+			reader, writer, err := os.Pipe()
+			if err != nil {
+				t.Fatalf("create stderr pipe: %v", err)
+			}
+			os.Stderr = writer
+			app, loadErr := compose.LoadCanonicalYAML(input)
+			os.Stderr = originalStderr
+			if closeErr := writer.Close(); closeErr != nil {
+				t.Fatalf("close stderr writer: %v", closeErr)
+			}
+			warning, readErr := io.ReadAll(reader)
+			if readErr != nil {
+				t.Fatalf("read stderr: %v", readErr)
+			}
+			if closeErr := reader.Close(); closeErr != nil {
+				t.Fatalf("close stderr reader: %v", closeErr)
+			}
+			if loadErr != nil {
+				t.Fatalf("LoadCanonicalYAML() error = %v", loadErr)
+			}
+			if got := app.Package.Version; got != tt.wantVersion {
+				t.Fatalf("Package.Version = %q, want %s", got, tt.wantVersion)
+			}
+			want := fmt.Sprintf(`x-uds.metadata.version %q does not match <upstream>-uds.<sub-version>; using the value unchanged`, tt.wantVersion)
+			if !strings.Contains(string(warning), want) {
+				t.Fatalf("expected warning %q, got %q", want, warning)
+			}
+		})
 	}
 }
 

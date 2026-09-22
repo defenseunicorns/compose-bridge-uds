@@ -8,7 +8,7 @@ Generated packages include consumer documentation under `out/docs/`. The top-lev
 
 The generated Zarf component uses one inferred package flavor. It is `registry1` when every packaged image originates from `registry1.dso.mil`; otherwise it is `upstream`. Use that flavor when running `zarf package create`; the generated package readme includes the exact command.
 
-Generated packages default to the standard UDS development version. The Zarf package version and Helm `appVersion` are `dev`, while the Helm chart version is the semantic version `0.0.0-dev`. A supplied `x-uds.metadata.version` value is preserved so release tooling such as `uds-pk` remains the version authority. The bridge emits a warning when that value is neither `dev` nor the conventional `<upstream>-uds.<sub-version>` form.
+Generated packages default to the standard UDS development version. The Zarf package version and Helm `appVersion` are `dev`, while the Helm chart version is the semantic version `0.0.0-dev`. A supplied `x-uds.metadata.version` value is preserved so release tooling such as `uds-pk` remains the version authority. The bridge emits a warning whenever the package version does not use the conventional `<upstream>-uds.<sub-version>` form, including for the default `dev` value.
 
 For UDS Registry publishing, generated Zarf metadata includes the standard `dev.uds.title`, `dev.uds.tagline`, and `dev.uds.icon` annotations. The title and tagline are derived from the generated package name. The SVG icon uses a deterministic color derived from a hash of that name, giving each generated package a stable visual variation.
 
