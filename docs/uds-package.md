@@ -8,7 +8,7 @@ Generated packages include consumer documentation under `out/docs/`. The top-lev
 
 The generated Zarf component uses one inferred package flavor. It is `registry1` when every packaged image originates from `registry1.dso.mil`; otherwise it is `upstream`. Use that flavor when running `zarf package create`; the generated package readme includes the exact command.
 
-Generated packages default to the standard UDS development version. The Zarf package version and Helm `appVersion` are `dev`, while the Helm chart version is the semantic version `0.0.0-dev`. Set `x-uds.metadata.version` to an upstream semantic version for release-oriented output; the bridge appends `-uds.0`, or preserves an existing `<upstream>-uds.<sub-version>` value.
+Generated packages default to the standard UDS development version. The Zarf package version and Helm `appVersion` are `dev`, while the Helm chart version is the semantic version `0.0.0-dev`. A supplied `x-uds.metadata.version` value is preserved so release tooling such as `uds-pk` remains the version authority. The bridge emits a warning when that value is neither `dev` nor the conventional `<upstream>-uds.<sub-version>` form.
 
 For UDS Registry publishing, generated Zarf metadata includes the standard `dev.uds.title`, `dev.uds.tagline`, and `dev.uds.icon` annotations. The title and tagline are derived from the generated package name. The SVG icon uses a deterministic color derived from a hash of that name, giving each generated package a stable visual variation.
 
@@ -42,7 +42,7 @@ Use `x-uds` [Compose extension keys](https://docs.docker.com/reference/compose-f
 | Key | Purpose |
 |---|---|
 | `x-uds.metadata.name` | Package name and Zarf default namespace (default: Compose project name). |
-| `x-uds.metadata.version` | Package version override (default: `dev`). `dev` is preserved for development packages, a semantic upstream version receives `-uds.0`, and an existing `<upstream>-uds.<sub-version>` value is preserved. |
+| `x-uds.metadata.version` | Package version override (default: `dev`). A supplied value (e.g. `<upstream>-uds.<sub-version>`) is preserved. |
 | `x-uds.metadata.labels` | Labels applied to generated UDS Package metadata. |
 | `x-uds.metadata.annotations` | Annotations applied to generated UDS Package metadata and Zarf package metadata. |
 | `x-uds.spec.network.expose[]` | Replace inferred expose rules. Missing fields are inferred from the service; set an empty list to disable exposure. |

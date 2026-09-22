@@ -105,7 +105,7 @@ x-uds:
 	requireDecision(t, conversion.Report.Ignored, "name")
 	requireDecision(t, conversion.Report.Ignored, "services.my_api.image")
 	imageDecision := requireDecision(t, conversion.Report.Inferred, "services.my_api.image")
-	if imageDecision.Value != "zarf.internal/uds-package-my-api:1.2.3-uds.0" {
+	if imageDecision.Value != "zarf.internal/uds-package-my-api:1.2.3" {
 		t.Fatalf("inferred image value = %q", imageDecision.Value)
 	}
 	if hasDecision(conversion.Report.Inferred, "services.my-api.image") {

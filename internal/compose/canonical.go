@@ -181,7 +181,7 @@ func remediationForInvalidSetting(path string) string {
 	case path == "x-uds.metadata.name":
 		return "set x-uds.metadata.name to a lowercase DNS-1123-compatible value"
 	case path == "x-uds.metadata.version":
-		return "set x-uds.metadata.version to dev or a non-empty version string such as 1.2.3 or 1.2.3-uds.0"
+		return "set x-uds.metadata.version to a non-empty string; use dev for development or <upstream>-uds.<sub-version> for a conventional release version"
 	case strings.HasPrefix(path, "x-uds.metadata.labels"), strings.HasPrefix(path, "x-uds.metadata.annotations"):
 		return "set this metadata field to an object whose values are strings"
 	case path == "x-uds.spec":
@@ -746,10 +746,7 @@ func parsePackageConfig(projectName string, raw map[string]any) (model.Package, 
 			if !ok || value == "" {
 				return model.Package{}, fmt.Errorf("invalid x-uds.metadata.version: must be a non-empty string")
 			}
-			upstreamVersion, packageVersion, err := normalizeConfiguredPackageVersion(value)
-			if err != nil {
-				return model.Package{}, fmt.Errorf("invalid x-uds.metadata.version: %w", err)
-			}
+			upstreamVersion, packageVersion := normalizeConfiguredPackageVersion(value)
 			config.UpstreamVersion = upstreamVersion
 			config.Version = packageVersion
 			config.VersionConfigured = true
@@ -856,27 +853,24 @@ var (
 	udsVersionPattern      = regexp.MustCompile(`^(.+)-uds\.([0-9]+)$`)
 )
 
-func normalizeConfiguredPackageVersion(value string) (string, string, error) {
+func normalizeConfiguredPackageVersion(value string) (string, string) {
 	if value == model.DevelopmentVersion {
-		return model.DevelopmentVersion, model.DevelopmentVersion, nil
+		return model.DevelopmentVersion, model.DevelopmentVersion
 	}
 
 	if matches := udsVersionPattern.FindStringSubmatch(value); matches != nil {
 		upstream, ok := normalizeUpstreamVersion(matches[1])
-		if !ok {
-			return "", "", fmt.Errorf("upstream version %q must begin with a numeric semantic version", matches[1])
+		if ok && (len(matches[2]) == 1 || !strings.HasPrefix(matches[2], "0")) {
+			return upstream, value
 		}
-		if len(matches[2]) > 1 && strings.HasPrefix(matches[2], "0") {
-			return "", "", fmt.Errorf("UDS sub-version %q must not contain leading zeroes", matches[2])
-		}
-		return upstream, upstream + "-uds." + matches[2], nil
 	}
 
+	fmt.Fprintf(os.Stderr, "warning: x-uds.metadata.version %q does not match <upstream>-uds.<sub-version>; preserving the supplied value\n", value)
 	upstream, ok := normalizeUpstreamVersion(value)
 	if !ok {
-		return "", "", fmt.Errorf("%q must begin with a numeric semantic version", value)
+		upstream = value
 	}
-	return upstream, upstream + "-uds.0", nil
+	return upstream, value
 }
 
 func normalizeUpstreamVersion(value string) (string, bool) {
