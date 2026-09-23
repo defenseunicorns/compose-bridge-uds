@@ -18,7 +18,7 @@ Generated package configuration follows these conventions:
 
 - Package-owned secrets are rendered from chart values rather than baked into templates.
 - Package-external secrets expose only non-sensitive Kubernetes Secret name and key variables; the chart neither includes their values nor creates their Secret objects.
-- Inline Compose config content is exposed as both a non-sensitive Zarf variable such as `APP_CONFIG` and a camel-cased Helm value such as `configs.appConfig`. The Compose content supplies the default.
+- Inline Compose config content is exposed as both a non-sensitive path-derived Zarf variable such as `CONFIG_STARTUPSCRIPT` and a Helm value that preserves the normalized Compose key, such as `configs.startupScript`. The Compose content supplies the default.
 - External Compose configs expose non-sensitive Kubernetes ConfigMap name and key variables and do not create ConfigMaps.
 - Service environment values are exposed as non-sensitive Zarf variables and rendered into per-service ConfigMaps.
 - CPU and memory requests and limits are exposed independently, with Compose reservations and limits supplying deployment defaults.
