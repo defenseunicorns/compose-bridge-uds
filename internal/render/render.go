@@ -730,8 +730,8 @@ func writeDeploymentTemplate(path string, manifest deploymentManifest, serviceNa
 }
 
 // writeConfigMapTemplate renders package-owned Compose config content from the
-// generated configs.<camelCase> Helm value. The value is not passed through
-// tpl, so application content that resembles a Helm expression remains literal.
+// Helm value keyed by the exact Compose config name. The value is not passed
+// through tpl, so application content that resembles a Helm expression remains literal.
 func writeConfigMapTemplate(path string, app model.App, config model.Config, valuesKey, contentVariable string) error {
 	const (
 		placeholder          = "__HELM_CONFIG_CONTENT__"
@@ -2248,21 +2248,8 @@ func buildEnvironmentVariables(
 			}
 		}
 	}
-	usedConfigValueKeys := map[string]string{}
 	for _, configName := range sortedConfigNames(app.Configs) {
-		config := app.Configs[configName]
 		variable := configVariables[configName]
-		if !config.External {
-			if existing, exists := usedConfigValueKeys[variable.ValuesKey]; exists {
-				return nil, &settingError{
-					path:        "configs." + configName,
-					code:        "helm-value-conflict",
-					message:     fmt.Sprintf("compose configs %q and %q generate the same Helm value configs.%s", existing, configName, variable.ValuesKey),
-					remediation: "rename one of the Compose configs so their generated camel-cased Helm value names are unique",
-				}
-			}
-			usedConfigValueKeys[variable.ValuesKey] = configName
-		}
 		for _, name := range []string{variable.Content, variable.ConfigMapName, variable.ConfigMapKey} {
 			if name == "" {
 				continue
@@ -2431,10 +2418,15 @@ func buildConfigVariables(configs map[string]model.Config) map[string]configVari
 	usedVariables := map[string]struct{}{}
 	out := map[string]configVariableNames{}
 	for _, name := range sortedConfigNames(configs) {
-		if !configs[name].External {
+		config := configs[name]
+		if !config.External {
+			composeName := config.ComposeName
+			if composeName == "" {
+				composeName = name
+			}
 			out[name] = configVariableNames{
-				ValuesKey: lowerCamelConfigName(name),
-				Content:   normalizeZarfVariableName(name),
+				ValuesKey: composeName,
+				Content:   buildConfigValueVariableName(composeName),
 			}
 			continue
 		}
@@ -2448,23 +2440,9 @@ func buildConfigVariables(configs map[string]model.Config) map[string]configVari
 	return out
 }
 
-func lowerCamelConfigName(name string) string {
-	parts := strings.FieldsFunc(name, func(r rune) bool {
-		return r == '-' || r == '.' || r == '_'
-	})
-	if len(parts) == 0 {
-		return name
-	}
-	var value strings.Builder
-	value.WriteString(parts[0])
-	for _, part := range parts[1:] {
-		if part == "" {
-			continue
-		}
-		value.WriteString(strings.ToUpper(part[:1]))
-		value.WriteString(part[1:])
-	}
-	return value.String()
+func buildConfigValueVariableName(name string) string {
+	name = camelCaseBoundary.ReplaceAllString(name, "${1}_${2}")
+	return "CONFIG_" + normalizeZarfVariableName(name)
 }
 
 func buildUniqueVariableName(resourceName string, used map[string]struct{}) string {
@@ -2663,6 +2641,7 @@ var invalidPortNameRunes = regexp.MustCompile(`[^a-z0-9-]+`)
 var repeatedPortNameHyphens = regexp.MustCompile(`-+`)
 var portNameLetter = regexp.MustCompile(`[a-z]`)
 var invalidZarfVariableRunes = regexp.MustCompile(`[^A-Z0-9_]+`)
+var camelCaseBoundary = regexp.MustCompile(`([a-z0-9])([A-Z])`)
 var validZarfVariableName = regexp.MustCompile(`^[A-Z0-9_]+$`)
 var kubernetesEnvironmentName = regexp.MustCompile(`^[-._a-zA-Z][-._a-zA-Z0-9]*$`)
 

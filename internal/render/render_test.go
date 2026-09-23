@@ -1646,7 +1646,7 @@ configs:
 	}
 
 	configMap := readFile(t, filepath.Join(outDir, "chart", "templates", "configmap-app-config.yaml"))
-	for _, want := range []string{`{{ dict "app-config" (index .Values.configs "appConfig") | toYaml | indent 4 }}`, `uds.dev/pod-reload: "true"`} {
+	for _, want := range []string{`{{ dict "app-config" (index .Values.configs "app_config") | toYaml | indent 4 }}`, `uds.dev/pod-reload: "true"`} {
 		if !strings.Contains(configMap, want) {
 			t.Fatalf("expected configmap to contain %q\n%s", want, configMap)
 		}
@@ -1722,13 +1722,16 @@ configs:
 
 	chartValues := readYAMLMap(t, filepath.Join(outDir, "chart", "values.yaml"))
 	configs := mustMap(t, chartValues["configs"])
-	if got := configs["startupScript"]; got != defaultContent {
-		t.Fatalf("configs.startupScript = %#v, want %#v", got, defaultContent)
+	if got := configs["startup-script"]; got != defaultContent {
+		t.Fatalf("configs.startup-script = %#v, want %#v", got, defaultContent)
+	}
+	if _, exists := configs["startupScript"]; exists {
+		t.Fatalf("unexpected camel-cased configs.startupScript key: %#v", configs)
 	}
 
 	configMap := readFile(t, filepath.Join(outDir, "chart", "templates", "configmap-startup-script.yaml"))
 	for _, want := range []string{
-		`{{ dict "startup-script" (index .Values.configs "startupScript") | toYaml | indent 4 }}`,
+		`{{ dict "startup-script" (index .Values.configs "startup-script") | toYaml | indent 4 }}`,
 		`uds.dev/pod-reload: "true"`,
 	} {
 		if !strings.Contains(configMap, want) {
@@ -1752,8 +1755,8 @@ configs:
 	}
 
 	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
-	if !strings.Contains(zarfValues, "configs:\n    startupScript: |-\n        ###ZARF_VAR_STARTUP_SCRIPT###") {
-		t.Fatalf("expected nested Helm value to be wired to STARTUP_SCRIPT\n%s", zarfValues)
+	if !strings.Contains(zarfValues, "configs:\n    startup-script: |-\n        ###ZARF_VAR_CONFIG_STARTUP_SCRIPT###") {
+		t.Fatalf("expected configs.startup-script to be wired to CONFIG_STARTUP_SCRIPT\n%s", zarfValues)
 	}
 	zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
 	variables, ok := zarfConfig["variables"].([]any)
@@ -1763,16 +1766,16 @@ configs:
 	var startupScript map[string]any
 	for _, raw := range variables {
 		variable := mustMap(t, raw)
-		if variable["name"] == "STARTUP_SCRIPT" {
+		if variable["name"] == "CONFIG_STARTUP_SCRIPT" {
 			startupScript = variable
 			break
 		}
 	}
 	if startupScript == nil || startupScript["default"] != defaultContent || startupScript["autoIndent"] != true {
-		t.Fatalf("unexpected STARTUP_SCRIPT variable: %#v", startupScript)
+		t.Fatalf("unexpected CONFIG_STARTUP_SCRIPT variable: %#v", startupScript)
 	}
 	if _, exists := startupScript["sensitive"]; exists {
-		t.Fatalf("STARTUP_SCRIPT must not be sensitive: %#v", startupScript)
+		t.Fatalf("CONFIG_STARTUP_SCRIPT must not be sensitive: %#v", startupScript)
 	}
 
 	udsPath, err := exec.LookPath("uds")
@@ -1781,7 +1784,7 @@ configs:
 	}
 	overrideContent := "#!/usr/bin/env bash\nawslocal s3 mb s3://argo-workflows\necho '{{ still.literal }}'\n"
 	valuesPath := filepath.Join(t.TempDir(), "values.yaml")
-	valuesYAML, err := yamlv3.Marshal(map[string]any{"configs": map[string]any{"startupScript": overrideContent}})
+	valuesYAML, err := yamlv3.Marshal(map[string]any{"configs": map[string]any{"startup-script": overrideContent}})
 	if err != nil {
 		t.Fatalf("marshal Helm override: %v", err)
 	}
@@ -1795,6 +1798,67 @@ configs:
 	renderedConfigMap := findYAMLDocumentByKind(t, rendered, "ConfigMap")
 	if got := mustMap(t, renderedConfigMap["data"])["startup-script"]; got != overrideContent {
 		t.Fatalf("rendered startup script = %#v, want override content", got)
+	}
+}
+
+func TestWritePackageNormalizesFlatInlineConfigVariableNames(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		configName string
+		helmKey    string
+	}{
+		{name: "camel case", configName: "startupScript", helmKey: "startupScript"},
+		{name: "kebab case", configName: "startup-script", helmKey: "startup-script"},
+		{name: "snake case", configName: "startup_script", helmKey: "startup_script"},
+		{name: "surrounding whitespace", configName: "\nstartupScript\t", helmKey: "startupScript"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			input := fmt.Appendf(nil, `name: demo
+services:
+  app:
+    image: example/app
+    configs:
+      - source: %q
+configs:
+  %q:
+    content: value
+`, tt.configName, tt.configName)
+			app, err := compose.LoadCanonicalYAML(input)
+			if err != nil {
+				t.Fatalf("LoadCanonicalYAML() error = %v", err)
+			}
+			outDir := t.TempDir()
+			if err := render.WritePackage(outDir, app); err != nil {
+				t.Fatalf("WritePackage() error = %v", err)
+			}
+
+			chartValues := readYAMLMap(t, filepath.Join(outDir, "chart", "values.yaml"))
+			configs := mustMap(t, chartValues["configs"])
+			if got := configs[tt.helmKey]; got != "value" {
+				t.Fatalf("configs.%s = %#v, want %q", tt.helmKey, got, "value")
+			}
+
+			zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
+			variables, ok := zarfConfig["variables"].([]any)
+			if !ok {
+				t.Fatalf("expected Zarf variables, got %#v", zarfConfig["variables"])
+			}
+			var found bool
+			for _, raw := range variables {
+				if mustMap(t, raw)["name"] == "CONFIG_STARTUP_SCRIPT" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("configs.%s did not produce CONFIG_STARTUP_SCRIPT: %#v", tt.helmKey, variables)
+			}
+		})
 	}
 }
 
@@ -1976,7 +2040,7 @@ configs:
 	}
 }
 
-func TestWritePackageRejectsInlineConfigVariableAndHelmKeyCollisions(t *testing.T) {
+func TestWritePackageRejectsInlineConfigVariableCollisions(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1985,21 +2049,7 @@ func TestWritePackageRejectsInlineConfigVariableAndHelmKeyCollisions(t *testing.
 		want  string
 	}{
 		{
-			name: "zarf variable",
-			input: `name: demo
-services:
-  app:
-    image: example/app
-    configs:
-      - source: domain
-configs:
-  domain:
-    content: example
-`,
-			want: `generates Zarf variable "DOMAIN"`,
-		},
-		{
-			name: "helm value",
+			name: "normalized zarf variable",
 			input: `name: demo
 services:
   app:
@@ -2013,7 +2063,7 @@ configs:
   app.config:
     content: two
 `,
-			want: "generate the same Helm value configs.appConfig",
+			want: `generates Zarf variable "CONFIG_APP_CONFIG"`,
 		},
 	}
 
