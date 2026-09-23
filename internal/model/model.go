@@ -88,6 +88,7 @@ type Secret struct {
 
 type Config struct {
 	Name         string
+	ComposeName  string
 	ExternalName string
 	External     bool
 	Content      string

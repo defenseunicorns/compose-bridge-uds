@@ -1385,6 +1385,7 @@ func normalizeTopLevelConfigs(raw types.Configs) (map[string]model.Config, map[s
 		}
 		configs[normalized] = model.Config{
 			Name:         normalized,
+			ComposeName:  key,
 			ExternalName: strings.TrimSpace(value.Name),
 			External:     bool(value.External),
 			Content:      value.Content,

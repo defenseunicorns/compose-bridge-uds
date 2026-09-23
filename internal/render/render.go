@@ -730,7 +730,7 @@ func writeDeploymentTemplate(path string, manifest deploymentManifest, serviceNa
 }
 
 // writeConfigMapTemplate renders package-owned Compose config content from the
-// Helm value keyed by the normalized Compose config name. The value is not passed
+// Helm value keyed by the exact Compose config name. The value is not passed
 // through tpl, so application content that resembles a Helm expression remains literal.
 func writeConfigMapTemplate(path string, app model.App, config model.Config, valuesKey, contentVariable string) error {
 	const (
@@ -2418,10 +2418,15 @@ func buildConfigVariables(configs map[string]model.Config) map[string]configVari
 	usedVariables := map[string]struct{}{}
 	out := map[string]configVariableNames{}
 	for _, name := range sortedConfigNames(configs) {
-		if !configs[name].External {
+		config := configs[name]
+		if !config.External {
+			composeName := config.ComposeName
+			if composeName == "" {
+				composeName = name
+			}
 			out[name] = configVariableNames{
-				ValuesKey: name,
-				Content:   buildConfigValueVariableName(name),
+				ValuesKey: composeName,
+				Content:   buildConfigValueVariableName(composeName),
 			}
 			continue
 		}
@@ -2435,8 +2440,9 @@ func buildConfigVariables(configs map[string]model.Config) map[string]configVari
 	return out
 }
 
-func buildConfigValueVariableName(path ...string) string {
-	return normalizeZarfVariableName(strings.Join(path, "_"))
+func buildConfigValueVariableName(name string) string {
+	name = camelCaseBoundary.ReplaceAllString(name, "${1}_${2}")
+	return "CONFIG_" + normalizeZarfVariableName(name)
 }
 
 func buildUniqueVariableName(resourceName string, used map[string]struct{}) string {
@@ -2635,7 +2641,7 @@ var invalidPortNameRunes = regexp.MustCompile(`[^a-z0-9-]+`)
 var repeatedPortNameHyphens = regexp.MustCompile(`-+`)
 var portNameLetter = regexp.MustCompile(`[a-z]`)
 var invalidZarfVariableRunes = regexp.MustCompile(`[^A-Z0-9_]+`)
-var invalidZarfPathSegmentRunes = regexp.MustCompile(`[^A-Z0-9]+`)
+var camelCaseBoundary = regexp.MustCompile(`([a-z0-9])([A-Z])`)
 var validZarfVariableName = regexp.MustCompile(`^[A-Z0-9_]+$`)
 var kubernetesEnvironmentName = regexp.MustCompile(`^[-._a-zA-Z][-._a-zA-Z0-9]*$`)
 

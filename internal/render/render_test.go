@@ -1646,7 +1646,7 @@ configs:
 	}
 
 	configMap := readFile(t, filepath.Join(outDir, "chart", "templates", "configmap-app-config.yaml"))
-	for _, want := range []string{`{{ dict "app-config" (index .Values.configs "app-config") | toYaml | indent 4 }}`, `uds.dev/pod-reload: "true"`} {
+	for _, want := range []string{`{{ dict "app-config" (index .Values.configs "app_config") | toYaml | indent 4 }}`, `uds.dev/pod-reload: "true"`} {
 		if !strings.Contains(configMap, want) {
 			t.Fatalf("expected configmap to contain %q\n%s", want, configMap)
 		}
@@ -1755,8 +1755,8 @@ configs:
 	}
 
 	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
-	if !strings.Contains(zarfValues, "configs:\n    startup-script: |-\n        ###ZARF_VAR_STARTUP_SCRIPT###") {
-		t.Fatalf("expected configs.startup-script to be wired to STARTUP_SCRIPT\n%s", zarfValues)
+	if !strings.Contains(zarfValues, "configs:\n    startup-script: |-\n        ###ZARF_VAR_CONFIG_STARTUP_SCRIPT###") {
+		t.Fatalf("expected configs.startup-script to be wired to CONFIG_STARTUP_SCRIPT\n%s", zarfValues)
 	}
 	zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
 	variables, ok := zarfConfig["variables"].([]any)
@@ -1766,16 +1766,16 @@ configs:
 	var startupScript map[string]any
 	for _, raw := range variables {
 		variable := mustMap(t, raw)
-		if variable["name"] == "STARTUP_SCRIPT" {
+		if variable["name"] == "CONFIG_STARTUP_SCRIPT" {
 			startupScript = variable
 			break
 		}
 	}
 	if startupScript == nil || startupScript["default"] != defaultContent || startupScript["autoIndent"] != true {
-		t.Fatalf("unexpected STARTUP_SCRIPT variable: %#v", startupScript)
+		t.Fatalf("unexpected CONFIG_STARTUP_SCRIPT variable: %#v", startupScript)
 	}
 	if _, exists := startupScript["sensitive"]; exists {
-		t.Fatalf("STARTUP_SCRIPT must not be sensitive: %#v", startupScript)
+		t.Fatalf("CONFIG_STARTUP_SCRIPT must not be sensitive: %#v", startupScript)
 	}
 
 	udsPath, err := exec.LookPath("uds")
@@ -1798,6 +1798,57 @@ configs:
 	renderedConfigMap := findYAMLDocumentByKind(t, rendered, "ConfigMap")
 	if got := mustMap(t, renderedConfigMap["data"])["startup-script"]; got != overrideContent {
 		t.Fatalf("rendered startup script = %#v, want override content", got)
+	}
+}
+
+func TestWritePackageNormalizesFlatInlineConfigVariableNames(t *testing.T) {
+	t.Parallel()
+
+	for _, configName := range []string{"startupScript", "startup-script", "startup_script"} {
+		t.Run(configName, func(t *testing.T) {
+			t.Parallel()
+
+			input := fmt.Appendf(nil, `name: demo
+services:
+  app:
+    image: example/app
+    configs:
+      - source: %q
+configs:
+  %q:
+    content: value
+`, configName, configName)
+			app, err := compose.LoadCanonicalYAML(input)
+			if err != nil {
+				t.Fatalf("LoadCanonicalYAML() error = %v", err)
+			}
+			outDir := t.TempDir()
+			if err := render.WritePackage(outDir, app); err != nil {
+				t.Fatalf("WritePackage() error = %v", err)
+			}
+
+			chartValues := readYAMLMap(t, filepath.Join(outDir, "chart", "values.yaml"))
+			configs := mustMap(t, chartValues["configs"])
+			if got := configs[configName]; got != "value" {
+				t.Fatalf("configs.%s = %#v, want %q", configName, got, "value")
+			}
+
+			zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
+			variables, ok := zarfConfig["variables"].([]any)
+			if !ok {
+				t.Fatalf("expected Zarf variables, got %#v", zarfConfig["variables"])
+			}
+			var found bool
+			for _, raw := range variables {
+				if mustMap(t, raw)["name"] == "CONFIG_STARTUP_SCRIPT" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("configs.%s did not produce CONFIG_STARTUP_SCRIPT: %#v", configName, variables)
+			}
+		})
 	}
 }
 
@@ -2002,7 +2053,7 @@ configs:
   app.config:
     content: two
 `,
-			want: `generates Zarf variable "APP_CONFIG"`,
+			want: `generates Zarf variable "CONFIG_APP_CONFIG"`,
 		},
 	}
 
