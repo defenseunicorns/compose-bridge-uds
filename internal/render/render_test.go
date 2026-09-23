@@ -1804,8 +1804,18 @@ configs:
 func TestWritePackageNormalizesFlatInlineConfigVariableNames(t *testing.T) {
 	t.Parallel()
 
-	for _, configName := range []string{"startupScript", "startup-script", "startup_script"} {
-		t.Run(configName, func(t *testing.T) {
+	tests := []struct {
+		name       string
+		configName string
+		helmKey    string
+	}{
+		{name: "camel case", configName: "startupScript", helmKey: "startupScript"},
+		{name: "kebab case", configName: "startup-script", helmKey: "startup-script"},
+		{name: "snake case", configName: "startup_script", helmKey: "startup_script"},
+		{name: "surrounding whitespace", configName: "\nstartupScript\t", helmKey: "startupScript"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			input := fmt.Appendf(nil, `name: demo
@@ -1817,7 +1827,7 @@ services:
 configs:
   %q:
     content: value
-`, configName, configName)
+`, tt.configName, tt.configName)
 			app, err := compose.LoadCanonicalYAML(input)
 			if err != nil {
 				t.Fatalf("LoadCanonicalYAML() error = %v", err)
@@ -1829,8 +1839,8 @@ configs:
 
 			chartValues := readYAMLMap(t, filepath.Join(outDir, "chart", "values.yaml"))
 			configs := mustMap(t, chartValues["configs"])
-			if got := configs[configName]; got != "value" {
-				t.Fatalf("configs.%s = %#v, want %q", configName, got, "value")
+			if got := configs[tt.helmKey]; got != "value" {
+				t.Fatalf("configs.%s = %#v, want %q", tt.helmKey, got, "value")
 			}
 
 			zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
@@ -1846,7 +1856,7 @@ configs:
 				}
 			}
 			if !found {
-				t.Fatalf("configs.%s did not produce CONFIG_STARTUP_SCRIPT: %#v", configName, variables)
+				t.Fatalf("configs.%s did not produce CONFIG_STARTUP_SCRIPT: %#v", tt.helmKey, variables)
 			}
 		})
 	}
