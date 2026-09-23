@@ -2436,15 +2436,7 @@ func buildConfigVariables(configs map[string]model.Config) map[string]configVari
 }
 
 func buildConfigValueVariableName(path ...string) string {
-	segments := []string{"CONFIG"}
-	for _, key := range path {
-		segment := strings.ToUpper(strings.TrimSpace(key))
-		segment = invalidZarfPathSegmentRunes.ReplaceAllString(segment, "")
-		if segment != "" {
-			segments = append(segments, segment)
-		}
-	}
-	return strings.Join(segments, "_")
+	return normalizeZarfVariableName(strings.Join(path, "_"))
 }
 
 func buildUniqueVariableName(resourceName string, used map[string]struct{}) string {

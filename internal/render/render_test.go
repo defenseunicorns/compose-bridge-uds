@@ -1755,8 +1755,8 @@ configs:
 	}
 
 	zarfValues := readFile(t, filepath.Join(outDir, "values", "values.yaml"))
-	if !strings.Contains(zarfValues, "configs:\n    startup-script: |-\n        ###ZARF_VAR_CONFIG_STARTUPSCRIPT###") {
-		t.Fatalf("expected configs.startup-script to be wired to CONFIG_STARTUPSCRIPT\n%s", zarfValues)
+	if !strings.Contains(zarfValues, "configs:\n    startup-script: |-\n        ###ZARF_VAR_STARTUP_SCRIPT###") {
+		t.Fatalf("expected configs.startup-script to be wired to STARTUP_SCRIPT\n%s", zarfValues)
 	}
 	zarfConfig := readYAMLMap(t, filepath.Join(outDir, "zarf.yaml"))
 	variables, ok := zarfConfig["variables"].([]any)
@@ -1766,16 +1766,16 @@ configs:
 	var startupScript map[string]any
 	for _, raw := range variables {
 		variable := mustMap(t, raw)
-		if variable["name"] == "CONFIG_STARTUPSCRIPT" {
+		if variable["name"] == "STARTUP_SCRIPT" {
 			startupScript = variable
 			break
 		}
 	}
 	if startupScript == nil || startupScript["default"] != defaultContent || startupScript["autoIndent"] != true {
-		t.Fatalf("unexpected CONFIG_STARTUPSCRIPT variable: %#v", startupScript)
+		t.Fatalf("unexpected STARTUP_SCRIPT variable: %#v", startupScript)
 	}
 	if _, exists := startupScript["sensitive"]; exists {
-		t.Fatalf("CONFIG_STARTUPSCRIPT must not be sensitive: %#v", startupScript)
+		t.Fatalf("STARTUP_SCRIPT must not be sensitive: %#v", startupScript)
 	}
 
 	udsPath, err := exec.LookPath("uds")
@@ -2002,7 +2002,7 @@ configs:
   app.config:
     content: two
 `,
-			want: `generates Zarf variable "CONFIG_APPCONFIG"`,
+			want: `generates Zarf variable "APP_CONFIG"`,
 		},
 	}
 

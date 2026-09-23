@@ -76,11 +76,11 @@ Secret. Build secrets are unaffected by this runtime-secret behavior.
 
 Compose configs with inline `content:` become reloadable package-owned
 ConfigMaps. Each inline config also becomes a non-sensitive, auto-indented Zarf
-variable derived from its values path. Underscores mark nested key boundaries,
-while punctuation within a key is removed; for example, `configs.startupScript`
-becomes `CONFIG_STARTUPSCRIPT`. The Compose content is the variable's default and is
+variable derived from its values path. Underscores mark nested key boundaries
+and punctuation within a key becomes underscores; for example,
+`configs.startup-script` becomes `STARTUP_SCRIPT`. The Compose content is the variable's default and is
 available directly to Helm consumers under the same normalized key, such as
-`configs.startupScript`. This permits multiline content to be replaced at
+`configs.startup-script`. This permits multiline content to be replaced at
 deployment time without regenerating the package. Applications without inline
 configs do not receive a `configs` values section or config-content variables.
 
