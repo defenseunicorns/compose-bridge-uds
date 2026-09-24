@@ -2743,12 +2743,64 @@ services:
 	}
 }
 
+func TestSSOInferredRedirectUsesPrimaryExposureGateway(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name         string
+		sso          string
+		host         string
+		redirectHost string
+	}{
+		{name: "generated SSO", host: "          host: admin-app\n", redirectHost: "admin-app"},
+		{name: "configured SSO without redirectUris", sso: "    sso:\n      - clientId: custom-id\n", redirectHost: `{{ include "composeBridge.subdomain" . }}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			input := []byte("name: myapp\nx-uds:\n  spec:\n" + tc.sso + `    network:
+      expose:
+        - service: web
+          gateway: admin
+` + tc.host + `services:
+  web:
+    image: nginx:latest
+    ports:
+      - "8080:8080"
+`)
+			app, err := compose.LoadCanonicalYAML(input)
+			if err != nil {
+				t.Fatalf("LoadCanonicalYAML() error = %v", err)
+			}
+			outDir := t.TempDir()
+			if err := render.WritePackage(outDir, app); err != nil {
+				t.Fatalf("WritePackage() error = %v", err)
+			}
+			udsPackage := readFile(t, filepath.Join(outDir, "chart", "templates", "uds-package.yaml"))
+			for _, want := range []string{
+				"gateway: admin",
+				"https://" + tc.redirectHost + ".admin.{{ .Values.uds.domain }}/*",
+			} {
+				if !strings.Contains(udsPackage, want) {
+					t.Fatalf("expected UDS package to contain %q\n%s", want, udsPackage)
+				}
+			}
+			if strings.Contains(udsPackage, `https://{{ include "composeBridge.subdomain" . }}.{{ .Values.uds.domain }}/*`) {
+				t.Fatalf("tenant redirect must not be inferred for admin gateway\n%s", udsPackage)
+			}
+		})
+	}
+}
+
 func TestSSOExplicitRedirectURIsRemainLiteralAndOrdered(t *testing.T) {
 	t.Parallel()
 
 	input := []byte(`name: myapp
 x-uds:
   spec:
+    network:
+      expose:
+        - service: web
+          gateway: admin
     sso:
       - redirectUris:
           - https://first.example/callback
@@ -2792,6 +2844,9 @@ services:
 	}
 	if strings.Contains(udsPackage, "https://{{ include \"composeBridge.subdomain\" . }}.{{ .Values.uds.domain }}/*") {
 		t.Fatalf("did not expect inferred redirect URI when redirectUris is supplied\n%s", udsPackage)
+	}
+	if strings.Contains(udsPackage, ".admin.{{ .Values.uds.domain }}/*") {
+		t.Fatalf("did not expect admin redirect URI when redirectUris is supplied\n%s", udsPackage)
 	}
 }
 
