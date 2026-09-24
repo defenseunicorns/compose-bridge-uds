@@ -1501,9 +1501,9 @@ func buildSSO(app model.App) []any {
 		if len(app.Package.SSO) == 0 {
 			return nil
 		}
-		return enrichSSOEntries(app, host, service)
+		return enrichSSOEntries(app, host, service, primaryExposure.Gateway)
 	}
-	return buildInferredSSO(app, host, service)
+	return buildInferredSSO(app, host, service, primaryExposure.Gateway)
 }
 
 func buildMonitor(app model.App) ([]any, error) {
@@ -1731,7 +1731,7 @@ func lookupRawInt(values map[string]any, key string) (int, bool) {
 }
 
 // buildInferredSSO generates a default SSO client from the app's expose rules.
-func buildInferredSSO(app model.App, host, service string) []any {
+func buildInferredSSO(app model.App, host, service, gateway string) []any {
 	if host == "" {
 		return nil
 	}
@@ -1740,7 +1740,7 @@ func buildInferredSSO(app model.App, host, service string) []any {
 			"clientId": inferredSSOClientID(app.Package),
 			"name":     inferredSSOName(app.Package),
 			"redirectUris": []any{
-				inferredRedirectURI(host),
+				inferredRedirectURI(host, gateway),
 			},
 			"enableAuthserviceSelector": map[string]string{
 				"app.kubernetes.io/name": service,
@@ -1750,7 +1750,7 @@ func buildInferredSSO(app model.App, host, service string) []any {
 }
 
 // enrichSSOEntries fills in missing fields on user-provided x-uds.spec.sso entries.
-func enrichSSOEntries(app model.App, host, service string) []any {
+func enrichSSOEntries(app model.App, host, service, gateway string) []any {
 	enriched := make([]any, 0, len(app.Package.SSO))
 
 	for _, raw := range app.Package.SSO {
@@ -1763,7 +1763,7 @@ func enrichSSOEntries(app model.App, host, service string) []any {
 		setDefault(item, "name", inferredSSOName(app.Package))
 		if host != "" {
 			setDefault(item, "redirectUris", []any{
-				inferredRedirectURI(host),
+				inferredRedirectURI(host, gateway),
 			})
 		}
 		if service != "" {
@@ -1788,7 +1788,10 @@ func inferredSSOName(pkg model.Package) string {
 	return titleCase(pkg.Name) + " Login"
 }
 
-func inferredRedirectURI(host string) string {
+func inferredRedirectURI(host, gateway string) string {
+	if gateway == "admin" {
+		return fmt.Sprintf("https://%s.admin.%s/*", host, helmDomainValue)
+	}
 	return fmt.Sprintf("https://%s.%s/*", host, helmDomainValue)
 }
 

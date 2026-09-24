@@ -127,6 +127,7 @@ For a package named `hello-world` with `DOMAIN=uds.dev`, common deployment patte
 | Team 1 copy | `hello-world-team1` | unset | `https://hello-world-team1.uds.dev` | `https://hello-world-team1.uds.dev/*` |
 | Team 2 copy | `hello-world-team2` | unset | `https://hello-world-team2.uds.dev` | `https://hello-world-team2.uds.dev/*` |
 | Public subdomain differs from namespace | `hello-world-team3` | `hello-world-team3-public` | `https://hello-world-team3-public.uds.dev` | `https://hello-world-team3-public.uds.dev/*` |
+| Admin gateway (`x-uds.spec.network.expose[0].gateway: admin`) | `hello-world` | unset | `https://hello-world.admin.uds.dev` | `https://hello-world.admin.uds.dev/*` |
 
 The namespace controls placement and the SSO client ID. `SUBDOMAIN` only changes the first inferred host and redirect; it does not rename resources. Explicit `x-uds` values take precedence.
 

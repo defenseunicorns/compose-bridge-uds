@@ -38,6 +38,7 @@ func MetricsPorts(service model.Service) []model.Port {
 // came from explicit package configuration.
 type Exposure struct {
 	Service      string
+	Gateway      string
 	host         string
 	hostExplicit bool
 }
@@ -62,7 +63,8 @@ func PrimaryExposure(app model.App) Exposure {
 				hostValue, hostExists := item["host"]
 				host, _ := hostValue.(string)
 				service, _ := item["service"].(string)
-				return Exposure{Service: service, host: host, hostExplicit: hostExists}
+				gateway, _ := item["gateway"].(string)
+				return Exposure{Service: service, Gateway: gateway, host: host, hostExplicit: hostExists}
 			}
 		}
 		return Exposure{}
