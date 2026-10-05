@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.0](https://github.com/defenseunicorns/compose-bridge-uds/compare/v1.2.0...v1.3.0) (2026-09-24)
+
+
+### Features
+
+* allow dev package versions for UDS development workflows ([#140](https://github.com/defenseunicorns/compose-bridge-uds/issues/140)) ([98c1c0c](https://github.com/defenseunicorns/compose-bridge-uds/commit/98c1c0c1f59a432f8f8df80f41cf60d0f5b0fc14))
+
+
+### Bug Fixes
+
+* infer SSO redirects from primary gateway ([#143](https://github.com/defenseunicorns/compose-bridge-uds/issues/143)) ([eb0d502](https://github.com/defenseunicorns/compose-bridge-uds/commit/eb0d5025c1709eba5728fb5728a2c6aa00b092f8))
+* preserve Compose config keys in Helm values ([#142](https://github.com/defenseunicorns/compose-bridge-uds/issues/142)) ([afe332b](https://github.com/defenseunicorns/compose-bridge-uds/commit/afe332b37763637b994bd4b17794363b570c8a8d))
+
 ## [1.2.0](https://github.com/defenseunicorns/compose-bridge-uds/compare/v1.1.0...v1.2.0) (2026-09-21)
 
 
