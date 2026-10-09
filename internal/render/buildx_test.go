@@ -33,6 +33,10 @@ services:
       context: .
       args:
         MESSAGE: hello
+    depends_on: [db]
+  db:
+    image: postgres:18
+    expose: [5432]
 `), 0o644); err != nil {
 		t.Fatalf("write compose fixture: %v", err)
 	}
@@ -57,8 +61,12 @@ services:
 		"--set", "server.platform+=linux/amd64",
 		"--set", "server.platform+=linux/arm64",
 		"--set", "server.output=type=oci,dest="+archive,
+		"--set", "compose-bridge-dependency-wait.platform+=linux/amd64",
+		"--set", "compose-bridge-dependency-wait.platform+=linux/arm64",
+		"--set", "compose-bridge-dependency-wait.output=type=oci,dest=image-archives/compose-bridge-dependency-wait.tar",
 		"--print",
 		"server",
+		"compose-bridge-dependency-wait",
 	)
 	command.Dir = outDir
 	output, err := command.CombinedOutput()
@@ -74,6 +82,9 @@ services:
 		`"linux/arm64"`,
 		`"dest": "image-archives/server.tar"`,
 		`"type": "oci"`,
+		`"compose-bridge-dependency-wait"`,
+		`"zarf.internal/bake-integration/compose-bridge-dependency-wait:dev"`,
+		`"dest": "image-archives/compose-bridge-dependency-wait.tar"`,
 	} {
 		if !strings.Contains(printed, want) {
 			t.Fatalf("expected Buildx Bake output to contain %q\n%s", want, printed)

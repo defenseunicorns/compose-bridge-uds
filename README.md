@@ -9,7 +9,8 @@ Convert a Docker Compose application into a deployable [UDS](https://uds.defense
 
 ## Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/) with [Docker Compose](https://github.com/docker/compose) (v5.5.0 or later is recommended for build-only services)
+- [Docker](https://docs.docker.com/get-docker/) with [Buildx](https://docs.docker.com/build/buildx/), required to package local builds or dependency waits.
+- [Docker Compose](https://github.com/docker/compose) (v5.5.0 or later recommended for build-only services).
 - [k3d](https://k3d.io/stable/#releases)
 - [UDS CLI](https://uds.defenseunicorns.com/reference/cli/quickstart-and-usage/)
 
@@ -36,6 +37,7 @@ The transformation writes these artifacts to `out/`:
 | --- | --- |
 | `chart/` | Generated application Helm chart. |
 | `docs/` | Generated package documentation, including a human-readable `conversion.md` report. |
+| `images/` | helper image source build files, generated when needed. |
 | `values/` | Generated Helm values consumed during package deployment. |
 | `conversion.json` | Machine-readable conversion report for automation. |
 | `zarf.yaml` | Package metadata, components, images, variables, and documentation. |
