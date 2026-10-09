@@ -9,7 +9,8 @@ Convert a Docker Compose application into a deployable [UDS](https://uds.defense
 
 ## Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/) with [Docker Compose](https://github.com/docker/compose) (v5.5.0 or later is recommended for build-only services)
+- [Docker](https://docs.docker.com/get-docker/) with [Buildx](https://docs.docker.com/build/buildx/), required to package local builds.
+- [Docker Compose](https://github.com/docker/compose) (v5.5.0 or later recommended for build-only services).
 - [k3d](https://k3d.io/stable/#releases)
 - [UDS CLI](https://uds.defenseunicorns.com/reference/cli/quickstart-and-usage/)
 

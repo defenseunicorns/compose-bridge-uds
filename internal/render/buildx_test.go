@@ -33,6 +33,10 @@ services:
       context: .
       args:
         MESSAGE: hello
+    depends_on: [db]
+  db:
+    image: postgres:18
+    expose: [5432]
 `), 0o644); err != nil {
 		t.Fatalf("write compose fixture: %v", err)
 	}

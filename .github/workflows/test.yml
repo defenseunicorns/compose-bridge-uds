@@ -30,6 +30,9 @@ jobs:
   generated-package-lint:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      matrix:
+        image: [wait]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,6 +65,30 @@ jobs:
       - name: Install UDS package test dependencies
         run: uds run --no-progress actions:install-deps
 
+      - name: Inject helper image tags for the smoke test
+        env:
+          HELPER_NAME: ${{ matrix.image }}
+          HELPER_IMAGE: ghcr.io/defenseunicorns/compose-bridge-uds/${{ matrix.image }}:ci-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          docker buildx build --platform linux/amd64 --load \
+            --tag "${HELPER_IMAGE}" "internal/images/${HELPER_NAME}"
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("internal/render/render.go")
+          repository = "ghcr.io/defenseunicorns/compose-bridge-uds/" + os.environ["HELPER_NAME"]
+          source, count = re.subn(
+              r'(")' + re.escape(repository) + r':[^"]+("\s*// x-release-please-version)',
+              lambda match: match[1] + os.environ["HELPER_IMAGE"] + match[2],
+              path.read_text(),
+          )
+          if count != 1:
+              raise SystemExit("Expected exactly one helper image reference: " + repository)
+          path.write_text(source)
+          PY
+
       - name: Run simple example smoke test
         run: uds run --no-progress test-install
 
@@ -74,7 +101,7 @@ jobs:
         timeout-minutes: 2
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: simple-example-smoke-test-${{ github.run_id }}-${{ github.run_attempt }}
+          name: simple-example-smoke-test-${{ matrix.image }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: tests/.playwright
           include-hidden-files: true
           if-no-files-found: ignore
