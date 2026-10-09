@@ -21,24 +21,23 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
+const testWaitImage = "ghcr.io/defenseunicorns/compose-bridge-uds/wait:1.3.0" // x-release-please-version
+
 func TestWaitPackaging(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name, service, version, tag string
-		imageCollision              bool
+		name, version, applicationImage string
+		waitImageCount                  int
 	}{
-		{name: "prebuilt", service: "api", version: "dev", tag: "dev"},
-		{name: "target collision", service: "compose-bridge-dependency-wait", version: "dev", tag: "dev"},
-		{name: "image collision", service: "api", version: "dev", tag: "dev", imageCollision: true},
-		{name: "build metadata", service: "api", version: "1.2.3+build.1", tag: "1.2.3-build.1"},
-		{name: "long tag", service: "api", version: strings.Repeat("v", 129), tag: strings.Repeat("v", 128)},
-		{name: "empty normalized tag", service: "api", version: ".-", tag: "latest"},
+		{name: "dev", version: "dev", applicationImage: "acme/api:1", waitImageCount: 2},
+		{name: "configured version", version: "1.2.3", applicationImage: "acme/api:1", waitImageCount: 2},
+		{name: "shared application image", version: "dev", applicationImage: testWaitImage, waitImageCount: 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			app, err := compose.LoadCanonicalYAML([]byte(fmt.Sprintf(`name: demo
 services:
-  %s:
-    image: acme/api:1
+  api:
+    image: %s
     depends_on: [db, cache]
   db:
     image: postgres:18
@@ -46,26 +45,21 @@ services:
   cache:
     image: redis:8
     expose: [6379]
-`, tc.service)))
+x-uds:
+  metadata:
+    version: %s
+`, tc.applicationImage, tc.version)))
 			if err != nil {
 				t.Fatal(err)
 			}
-			app.Package.Version = tc.version
-			target := "compose-bridge-dependency-wait"
-			if tc.imageCollision {
-				app.Services[0].Image = "zarf.internal/demo/" + target + ":" + tc.tag
-			}
-			if tc.service == target || tc.imageCollision {
-				target += "-1"
-			}
-			image := "zarf.internal/demo/" + target + ":" + tc.tag
+
 			root := t.TempDir()
 			if err := render.WritePackage(root, app); err != nil {
 				t.Fatal(err)
 			}
-			deployment := readFile(t, filepath.Join(root, "chart/templates/deployment-"+tc.service+".yaml"))
+			deployment := readFile(t, filepath.Join(root, "chart/templates/deployment-api.yaml"))
 			for want, count := range map[string]int{
-				"cache:6379": 1, "db:5432": 1, "image: " + image: 2,
+				"cache:6379": 1, "db:5432": 1, "image: " + testWaitImage: tc.waitImageCount,
 				"runAsNonRoot: true": 2, "runAsUser: 65532": 2,
 				"readOnlyRootFilesystem: true": 2, "allowPrivilegeEscalation: false": 2, "- ALL": 2,
 			} {
@@ -80,35 +74,28 @@ services:
 				t.Fatal("dependency ordering changed")
 			}
 			zarf := readFile(t, filepath.Join(root, "zarf.yaml"))
-			for _, want := range []string{"onCreate:", "path: image-archives/" + target + ".tar", image, target + ".platform+=linux/amd64", target + ".platform+=linux/arm64"} {
-				if !strings.Contains(zarf, want) {
-					t.Fatalf("missing %q\n%s", want, zarf)
+			if strings.Count(zarf, testWaitImage) != 1 {
+				t.Fatalf("expected one shared bundled wait image\n%s", zarf)
+			}
+			for _, unexpected := range []string{"actions:", "onCreate:", "imageArchives:", "docker buildx"} {
+				if strings.Contains(zarf, unexpected) {
+					t.Fatalf("unexpected %q\n%s", unexpected, zarf)
 				}
 			}
-			if strings.Count(zarf, "path: image-archives/") != 1 {
-				t.Fatalf("expected one shared helper archive\n%s", zarf)
-			}
-			build := readFile(t, filepath.Join(root, "build.compose.yaml"))
-			if !strings.Contains(build, target+":") || !strings.Contains(build, image) || !strings.Contains(build, "context: ./images/wait") {
-				t.Fatal(build)
-			}
-			dockerfile := readFile(t, filepath.Join(root, "images/wait/Dockerfile"))
-			for _, want := range []string{"@sha256:", "CGO_ENABLED=0", "GOPROXY=off", "FROM scratch", "USER 65532:65532", "ENTRYPOINT [\"/wait\"]"} {
-				if !strings.Contains(dockerfile, want) {
-					t.Fatalf("Dockerfile missing %q", want)
+			for _, path := range []string{"build.compose.yaml", "images", "image-archives"} {
+				if _, err := os.Stat(filepath.Join(root, path)); !os.IsNotExist(err) {
+					t.Fatalf("unexpected %s: %v", path, err)
 				}
 			}
-			if !strings.Contains(readFile(t, filepath.Join(root, "images/wait/main.go")), "package main") {
-				t.Fatal("missing helper source")
-			}
-			if _, err := os.Stat(filepath.Join(root, "chart/templates/deployment-"+target+".yaml")); !os.IsNotExist(err) {
-				t.Fatal("helper became application deployment")
+			docs := readFile(t, filepath.Join(root, "docs/dependencies.md"))
+			if !strings.Contains(docs, "Zarf bundles the published") || strings.Contains(docs, "images/wait/") {
+				t.Fatal(docs)
 			}
 		})
 	}
 }
 
-func TestNoDependenciesOmitWaitBuild(t *testing.T) {
+func TestNoDependenciesOmitWaitImage(t *testing.T) {
 	t.Parallel()
 	app, err := compose.LoadCanonicalYAML([]byte("name: demo\nservices:\n  api:\n    image: acme/api:1\n"))
 	if err != nil {
@@ -118,14 +105,70 @@ func TestNoDependenciesOmitWaitBuild(t *testing.T) {
 	if err := render.WritePackage(root, app); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"images/wait", "build.compose.yaml"} {
+	for _, path := range []string{"images", "build.compose.yaml", "image-archives"} {
 		if _, err := os.Stat(filepath.Join(root, path)); !os.IsNotExist(err) {
 			t.Fatalf("unexpected %s: %v", path, err)
 		}
 	}
 	zarf := readFile(t, filepath.Join(root, "zarf.yaml"))
-	if strings.Contains(zarf, "onCreate:") || strings.Contains(zarf, "imageArchives:") {
+	if strings.Contains(zarf, "onCreate:") || strings.Contains(zarf, "imageArchives:") || strings.Contains(zarf, testWaitImage) {
 		t.Fatal(zarf)
+	}
+}
+
+func TestWaitImageOnlyWhenNeeded(t *testing.T) {
+	t.Parallel()
+
+	app, err := compose.LoadCanonicalYAML([]byte(`name: demo
+services:
+  api:
+    image: acme/api:1
+    depends_on: [db]
+  db:
+    image: postgres:18
+    expose: [5432]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Start with a valid dependency; Compose rejects required dependencies without TCP ports.
+	for _, tc := range []struct {
+		name     string
+		ports    []model.Port
+		wantWait bool
+	}{
+		{name: "no ports"},
+		{name: "UDP only", ports: []model.Port{{Number: 53, Protocol: "UDP"}}},
+		{name: "TCP", ports: []model.Port{{Number: 5432, Protocol: "TCP"}}, wantWait: true},
+	} {
+		for i := range app.Services {
+			if app.Services[i].Name == "db" {
+				app.Services[i].Ports = tc.ports
+			}
+		}
+		root := t.TempDir()
+		if err := render.WritePackage(root, app); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		zarf := readFile(t, filepath.Join(root, "zarf.yaml"))
+		if got := strings.Contains(zarf, testWaitImage); got != tc.wantWait {
+			t.Fatalf("%s: bundled wait image = %v, want %v", tc.name, got, tc.wantWait)
+		}
+		deployment := readFile(t, filepath.Join(root, "chart/templates/deployment-api.yaml"))
+		if got := strings.Contains(deployment, "initContainers:"); got != tc.wantWait {
+			t.Fatalf("%s: dependency wait = %v, want %v\n%s", tc.name, got, tc.wantWait, deployment)
+		}
+		for _, unexpected := range []string{"onCreate:", "imageArchives:", "docker buildx"} {
+			if strings.Contains(zarf, unexpected) {
+				t.Fatalf("%s: unexpected %q\n%s", tc.name, unexpected, zarf)
+			}
+		}
+		for _, path := range []string{"images", "build.compose.yaml", "image-archives"} {
+			if _, err := os.Stat(filepath.Join(root, path)); !os.IsNotExist(err) {
+				t.Fatalf("%s: unexpected %s: %v", tc.name, path, err)
+			}
+		}
 	}
 }
 
@@ -818,8 +861,10 @@ services:
   server:
     build:
       context: /workspace/server
+    depends_on: [cache]
   cache:
     image: redis:7-alpine
+    expose: [6379]
 `))
 	if err != nil {
 		t.Fatalf("LoadCanonicalYAML() error = %v", err)
@@ -837,9 +882,9 @@ services:
 	}
 	component := mustMap(t, components[0])
 
-	images, ok := component["images"].([]any)
-	if !ok || len(images) != 1 || images[0] != "redis:7-alpine" {
-		t.Fatalf("expected only the prebuilt image under images, got %#v", component["images"])
+	bundledImages, ok := component["images"].([]any)
+	if !ok || len(bundledImages) != 2 || bundledImages[0] != "redis:7-alpine" || bundledImages[1] != testWaitImage {
+		t.Fatalf("expected prebuilt application and wait images, got %#v", component["images"])
 	}
 
 	archives, ok := component["imageArchives"].([]any)
@@ -1078,7 +1123,7 @@ networks:
 		}
 	}
 	zarfConfig := readFile(t, filepath.Join(outDir, "zarf.yaml"))
-	if strings.Contains(zarfConfig, "postgres:18") || strings.Contains(zarfConfig, "compose-bridge-dependency-wait") {
+	if strings.Contains(zarfConfig, "postgres:18") || strings.Contains(zarfConfig, testWaitImage) {
 		t.Fatalf("did not expect excluded image or dependency init image\n%s", zarfConfig)
 	}
 	for _, want := range []string{

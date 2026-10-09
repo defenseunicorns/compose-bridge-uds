@@ -20,8 +20,8 @@ func TestSourceCrossCompilesStandalone(t *testing.T) {
 	} {
 		t.Run("linux/"+target.arch, func(t *testing.T) {
 			dir := t.TempDir()
-			mainFile := filepath.Join(dir, "main.go")
-			if err := os.WriteFile(mainFile, Source, 0600); err != nil {
+			mainFile, err := filepath.Abs(filepath.Join("cmd", "main.go"))
+			if err != nil {
 				t.Fatal(err)
 			}
 			binary := filepath.Join(dir, "wait")
@@ -56,8 +56,8 @@ func TestSourceCrossCompilesStandalone(t *testing.T) {
 
 func TestSourceBuildsStandalone(t *testing.T) {
 	dir := t.TempDir()
-	mainFile := filepath.Join(dir, "main.go")
-	if err := os.WriteFile(mainFile, Source, 0600); err != nil {
+	mainFile, err := filepath.Abs(filepath.Join("cmd", "main.go"))
+	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)

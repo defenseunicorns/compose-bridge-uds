@@ -16,7 +16,6 @@ import (
 
 	"defenseunicorns/uds-compose-bridge/internal/inference"
 	"defenseunicorns/uds-compose-bridge/internal/model"
-	"defenseunicorns/uds-compose-bridge/internal/render/images"
 )
 
 const zarfSchemaURL = "https://raw.githubusercontent.com/zarf-dev/zarf/main/zarf.schema.json"
@@ -33,6 +32,7 @@ const (
 	buildComposeFileName = "build.compose.yaml"
 	imageArchiveDir      = "image-archives"
 	buildxBuilderPrefix  = "compose-bridge-uds"
+	dependencyWaitImage  = "ghcr.io/defenseunicorns/compose-bridge-uds/wait:1.3.0" // x-release-please-version
 	// secretValuePlaceholder is the sentinel injected into a marshaled Secret's
 	// stringData and then replaced with a Helm value reference, so the Secret can
 	// be rendered by Helm from chart values rather than a static literal.
@@ -209,6 +209,11 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 		return err
 	}
 
+	var waitImage string
+	if hasDependencyWaits(app) {
+		waitImage = dependencyWaitImage
+	}
+
 	secretVariables := buildSecretVariables(app.Secrets)
 	configVariables := buildConfigVariables(app.Configs)
 	environmentVariables, err := buildEnvironmentVariables(app, secretVariables, configVariables)
@@ -230,7 +235,7 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 	preserveNetworkMembership := hasDistinctNetworkMemberships(app.Services)
 	servicePorts := map[string]int{}
 	for _, svc := range app.Services {
-		if port, ok := images.WaitPort(svc.Ports); ok {
+		if port, ok := primaryDependencyWaitPort(svc.Ports); ok {
 			servicePorts[svc.Name] = port
 		}
 	}
@@ -306,7 +311,6 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 			helmReleaseNamespace,
 			svc,
 			servicePorts,
-			images.WaitBuild(app).Image,
 			preserveNetworkMembership,
 			app.Secrets,
 			secretVariables,
@@ -353,12 +357,7 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 		return err
 	}
 
-	if images.HasWaits(app) {
-		if err := images.WriteWaitContext(root); err != nil {
-			return err
-		}
-	}
-	if len(packageBuildTargets(app)) > 0 {
+	if len(buildServices(app)) > 0 {
 		if err := writeBuildCompose(filepath.Join(root, buildComposeFileName), app); err != nil {
 			return err
 		}
@@ -368,8 +367,11 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 	for _, svc := range app.Services {
 		images = append(images, buildComponentImages(svc)...)
 	}
-	images = dedupeStrings(images)
 	flavor := inferPackageFlavor(app, images)
+	if waitImage != "" {
+		images = append(images, waitImage)
+	}
+	images = dedupeStrings(images)
 
 	if err := writePackageDocumentation(root, app, secretVariables, configVariables, environmentVariables, flavor); err != nil {
 		return err
@@ -509,45 +511,34 @@ func buildDependencyDocumentation(app model.App) string {
 		}
 		fmt.Fprintf(&content, "| `%s` | `%s` | %s |\n", markdownTableValue(svc.Name), markdownTableValue(svc.Image), markdownTableValue(dependencyText))
 	}
-	if images.HasWaits(app) {
-		content.WriteString("\n## Dependency startup waits\n\nEach new Pod waits for its dependencies' first TCP ports; Compose healthy/completed conditions and ongoing health are not checked.\n\nEdit `images/wait/main.go` and `images/wait/Dockerfile` before packaging if needed. Docker/Buildx is required even with prebuilt application images; deployment uses the bundled helper. Offline builds need the pinned Go builder accessible to Buildx, not just Docker's image cache. The project maintains the helper and Go toolchain; `scratch` does not eliminate binary vulnerabilities.\n")
+	if hasDependencyWaits(app) {
+		content.WriteString("\n## Dependency startup waits\n\nEach new Pod waits for its dependencies' first TCP ports; Compose healthy/completed conditions and ongoing health are not checked.\n\nZarf bundles the published TCP wait helper; no helper build is needed. Docker/Buildx is required only for application builds.\n")
 	}
 	return content.String()
 }
 
 // Compose build workspace and Zarf package-creation actions.
 
-type packageBuildTarget struct {
-	Name      string
-	Image     string
-	Config    map[string]any
-	ReadPaths []string
+func imageArchivePath(service string) string {
+	return filepath.ToSlash(filepath.Join(imageArchiveDir, service+".tar"))
 }
 
-func (target packageBuildTarget) archive() string {
-	return filepath.ToSlash(filepath.Join(imageArchiveDir, target.Name+".tar"))
-}
-
-func packageBuildTargets(app model.App) []packageBuildTarget {
-	var targets []packageBuildTarget
+func buildServices(app model.App) []model.Service {
+	var services []model.Service
 	for _, svc := range app.Services {
 		if svc.Build != nil {
-			targets = append(targets, packageBuildTarget{Name: svc.Name, Image: svc.Image, Config: svc.Build.Config, ReadPaths: svc.Build.ReadPaths})
+			services = append(services, svc)
 		}
 	}
-	if images.HasWaits(app) {
-		wait := images.WaitBuild(app)
-		targets = append(targets, packageBuildTarget{Name: wait.Name, Image: wait.Image, Config: wait.Config})
-	}
-	return targets
+	return services
 }
 
 func writeBuildCompose(path string, app model.App) error {
 	services := map[string]buildComposeService{}
-	for _, target := range packageBuildTargets(app) {
-		services[target.Name] = buildComposeService{
-			Image: target.Image,
-			Build: target.Config,
+	for _, svc := range buildServices(app) {
+		services[svc.Name] = buildComposeService{
+			Image: svc.Image,
+			Build: svc.Build.Config,
 		}
 	}
 	return writeYAMLFile(path, buildComposeFile{
@@ -558,7 +549,8 @@ func writeBuildCompose(path string, app model.App) error {
 }
 
 func buildCreateActions(app model.App) *zarfComponentActions {
-	if len(packageBuildTargets(app)) == 0 {
+	services := buildServices(app)
+	if len(services) == 0 {
 		return nil
 	}
 	builderVariables := []string{
@@ -585,8 +577,8 @@ func buildCreateActions(app model.App) *zarfComponentActions {
 		"  --progress plain",
 	}
 	readPaths := map[string]struct{}{}
-	for _, target := range packageBuildTargets(app) {
-		for _, path := range target.ReadPaths {
+	for _, svc := range services {
+		for _, path := range svc.Build.ReadPaths {
 			readPaths[path] = struct{}{}
 		}
 	}
@@ -594,11 +586,11 @@ func buildCreateActions(app model.App) *zarfComponentActions {
 		arguments = append(arguments, "  --allow "+shellQuote("fs.read="+path))
 	}
 	targets := []string{}
-	for _, build := range packageBuildTargets(app) {
-		target := build.Name
-		archive := build.archive()
+	for _, svc := range services {
+		target := svc.Name
+		archive := imageArchivePath(svc.Name)
 		archives = append(archives, shellQuote(archive))
-		if !buildDeclaresPlatforms(build.Config) {
+		if !buildDeclaresPlatforms(svc.Build.Config) {
 			arguments = append(arguments,
 				"  --set "+shellQuote(target+".platform+=linux/amd64"),
 				"  --set "+shellQuote(target+".platform+=linux/arm64"),
@@ -1148,10 +1140,10 @@ func writeZarfConfig(
 		Images:      dedupeStrings(images),
 		Actions:     buildCreateActions(app),
 	}
-	for _, target := range packageBuildTargets(app) {
+	for _, svc := range buildServices(app) {
 		component.ImageArchives = append(component.ImageArchives, zarfImageArchive{
-			Path:   target.archive(),
-			Images: []string{target.Image},
+			Path:   imageArchivePath(svc.Name),
+			Images: []string{svc.Image},
 		})
 	}
 	pkg.Components = append(pkg.Components, component)
@@ -1225,7 +1217,7 @@ func buildDeployment(
 	namespace string,
 	svc model.Service,
 	servicePorts map[string]int,
-	dependencyWaitImage string,
+
 	preserveNetworkMembership bool,
 	secrets map[string]model.Secret,
 	secretVariables map[string]secretVariableNames,
@@ -1239,7 +1231,7 @@ func buildDeployment(
 		Requests: map[string]string{"cpu": resourceValuePlaceholder, "memory": resourceValuePlaceholder},
 	}
 	securityContext := buildSecurityContext(svc)
-	initContainers := buildDependencyInitContainers(svc, servicePorts, dependencyWaitImage)
+	initContainers := buildDependencyInitContainers(svc, servicePorts)
 
 	container := containerSpec{
 		Name:            svc.Name,
@@ -1997,7 +1989,33 @@ func addExternalResourceHelmValue(
 	return placeholder
 }
 
-func buildDependencyInitContainers(svc model.Service, servicePorts map[string]int, image string) []containerSpec {
+func primaryDependencyWaitPort(ports []model.Port) (int, bool) {
+	for _, port := range ports {
+		if port.Number > 0 && strings.EqualFold(strings.TrimSpace(port.Protocol), "TCP") {
+			return port.Number, true
+		}
+	}
+	return 0, false
+}
+
+func hasDependencyWaits(app model.App) bool {
+	ports := map[string]int{}
+	for _, svc := range app.Services {
+		if port, ok := primaryDependencyWaitPort(svc.Ports); ok {
+			ports[svc.Name] = port
+		}
+	}
+	for _, svc := range app.Services {
+		for _, dep := range svc.DependsOn {
+			if ports[dep.Service] > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func buildDependencyInitContainers(svc model.Service, servicePorts map[string]int) []containerSpec {
 	if len(svc.DependsOn) == 0 {
 		return nil
 	}
@@ -2011,7 +2029,7 @@ func buildDependencyInitContainers(svc model.Service, servicePorts map[string]in
 		user := int64(65532)
 		containers = append(containers, containerSpec{
 			Name:            sanitizeManifestName("wait-" + dep.Service),
-			Image:           image,
+			Image:           dependencyWaitImage,
 			ImagePullPolicy: "IfNotPresent",
 			Args:            []string{fmt.Sprintf("%s:%d", dep.Service, port)},
 			SecurityContext: &securityContext{

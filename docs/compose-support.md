@@ -10,7 +10,7 @@
 | `secrets:`                                                       | Delivered as read-only files. Secrets used only by packaged services become package-owned Kubernetes Secrets. Native external secrets and secrets shared with excluded services reference deployment-provided Kubernetes Secret names and keys.                                                                                               |
 | `configs:`                                                       | Delivered as read-only files. Inline `content:` becomes a reloadable package-owned ConfigMap. Native external configs reference deployment-provided Kubernetes ConfigMap names and keys.                                                                                        |
 | `environment:`, `env_file:`                                      | Resolved by `docker compose config`, exposed as non-sensitive Zarf variables, and rendered into a reloadable ConfigMap consumed by the service through `envFrom`.                                                                                                               |
-| `depends_on:`                                                    | Required dependencies use a generated static Go TCP helper for per-new-Pod sequential waits on each dependency's first valid declared TCP port (see Dependency waits). A service referenced only through long-syntax dependencies with `required: false` is excluded as a development-only service.                                                                                       |
+| `depends_on:`                                                    | Required dependencies use a static Go TCP helper for per-new-Pod sequential waits on each dependency's first valid declared TCP port (see Dependency waits). A service referenced only through long-syntax dependencies with `required: false` is excluded as a development-only service.                                                                                       |
 | `healthcheck:`                                                   | `CMD` and `CMD-SHELL` forms convert to Kubernetes liveness probes.                                                                                                                                                                                                              |
 | `container_name:`                                                | Ignored with a warning. Kubernetes Service and Deployment names come from the Compose service name.                                                                                                                                                                             |
 | `stdin_open:`                                                    | Maps to the Kubernetes container `stdin` field.                                                                                                                                                                                                                                 |
@@ -57,12 +57,10 @@ Each new Pod waits sequentially for its dependencies' first declared TCP ports.
 This checks connectivity only, not Compose `service_healthy` or
 `service_completed_successfully` conditions or ongoing health.
 
-The generated `out/images/wait/` contains editable Go source and a Dockerfile
-for a non-root, single-binary `scratch` image. Packaging requires Docker/Buildx,
-even with prebuilt application images; deployment uses the bundled helper.
-Offline builds need the pinned Go builder accessible to Buildx, not just Docker's
-image cache. The project maintains the helper and Go toolchain; `scratch` minimizes,
-but does not eliminate binary vulnerabilities.
+Zarf bundles `ghcr.io/defenseunicorns/compose-bridge-uds/wait`, pinned in
+the renderer independently of the application's package version.
+Prebuilt applications need no helper build; deployment uses the bundled image.
+The project maintains the non-root `scratch` image and its Go toolchain.
 
 ## Runtime secrets
 
