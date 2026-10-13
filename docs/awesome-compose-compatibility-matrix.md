@@ -18,12 +18,12 @@ the tested baseline and Results table below.
 <!-- matrix-baseline:start -->
 | Input | Value |
 |---|---|
-| Compose Bridge | `fc9f1dc89cffbbc4c3c9cff436250cdb0281e4b3` |
+| Compose Bridge | `2685ce1cb79584909bdd8ba1e4a1216c380a28fa-dirty` |
 | Awesome Compose | [`30f4b7f6a6c3b0c0ecf4d4efb0de203c48d11562`](https://github.com/docker/awesome-compose/commit/30f4b7f6a6c3b0c0ecf4d4efb0de203c48d11562) |
-| Docker Compose | `5.5.0` |
-| Go | `go1.26.4 darwin/arm64` |
+| Docker Compose | `5.5.1` |
+| Go | `go1.27.1 darwin/arm64` |
 
-All 39 files canonicalized. The bridge supported and rendered 30 models and rejected 9 with diagnostics.
+All 39 files canonicalized. The bridge supported and rendered 24 models and rejected 15 with diagnostics.
 <!-- matrix-baseline:end -->
 
 Rendering only verified generation of
@@ -47,12 +47,12 @@ not build images, run Helm or Zarf validation, or deploy workloads.
 | `minecraft` | Supported |  |
 | `nextcloud-postgres` | Supported |  |
 | `nextcloud-redis-mariadb` | Supported |  |
-| `nginx-aspnet-mysql` | Supported |  |
-| `nginx-flask-mongo` | Rejected | `service-field: services.backend.stop_signal` |
+| `nginx-aspnet-mysql` | Rejected | `dependency-port: services.backend.depends_on.db`, `dependency-port: services.proxy.depends_on.backend` |
+| `nginx-flask-mongo` | Rejected | `dependency-port: services.backend.depends_on.mongo`, `dependency-port: services.web.depends_on.backend`, `service-field: services.backend.stop_signal` |
 | `nginx-flask-mysql` | Supported |  |
-| `nginx-golang` | Supported |  |
-| `nginx-golang-mysql` | Supported |  |
-| `nginx-golang-postgres` | Supported |  |
+| `nginx-golang` | Rejected | `dependency-port: services.proxy.depends_on.backend` |
+| `nginx-golang-mysql` | Rejected | `dependency-port: services.proxy.depends_on.backend` |
+| `nginx-golang-postgres` | Rejected | `dependency-port: services.proxy.depends_on.backend` |
 | `nginx-nodejs-redis` | Supported |  |
 | `nginx-wsgi-flask` | Supported |  |
 | `pihole-cloudflared-DoH` | Rejected | `network-options: networks.dns-net`, `network-options: services.cloudflared.networks.dns-net` |
@@ -61,14 +61,14 @@ not build images, run Helm or Zarf validation, or deploy workloads.
 | `postgresql-pgadmin` | Supported |  |
 | `prometheus-grafana` | Supported |  |
 | `react-express-mongodb` | Supported |  |
-| `react-express-mysql` | Supported |  |
-| `react-java-mysql` | Supported |  |
+| `react-express-mysql` | Rejected | `dependency-port: services.backend.depends_on.db` |
+| `react-java-mysql` | Rejected | `dependency-port: services.backend.depends_on.db`, `dependency-port: services.frontend.depends_on.backend` |
 | `react-nginx` | Supported |  |
 | `react-rust-postgres` | Supported |  |
 | `sparkjava` | Supported |  |
 | `sparkjava-mysql` | Supported |  |
 | `spring-postgres` | Supported |  |
-| `traefik-golang` | Rejected | `service-field: services.backend.labels` |
+| `traefik-golang` | Rejected | `dependency-port: services.frontend.depends_on.backend`, `service-field: services.backend.labels` |
 | `vuejs` | Supported |  |
 | `wasmedge-kafka-mysql` | Rejected | `service-field: services.etl.platform`, `service-field: services.etl.runtime` |
 | `wasmedge-mysql-nginx` | Rejected | `service-field: services.backend.platform`, `service-field: services.backend.runtime` |
