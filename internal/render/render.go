@@ -20,6 +20,9 @@ import (
 
 const zarfSchemaURL = "https://raw.githubusercontent.com/zarf-dev/zarf/main/zarf.schema.json"
 
+var imageVersion = "1.3.0" // x-release-please-version
+var dependencyWaitImage = "ghcr.io/defenseunicorns/compose-bridge-uds/wait:" + imageVersion
+
 const (
 	// chartDirName is the Helm chart directory written under the package root.
 	chartDirName = "chart"
@@ -32,7 +35,7 @@ const (
 	buildComposeFileName = "build.compose.yaml"
 	imageArchiveDir      = "image-archives"
 	buildxBuilderPrefix  = "compose-bridge-uds"
-	dependencyWaitImage  = "ghcr.io/defenseunicorns/compose-bridge-uds/wait:1.3.0" // x-release-please-version
+
 	// secretValuePlaceholder is the sentinel injected into a marshaled Secret's
 	// stringData and then replaced with a Helm value reference, so the Secret can
 	// be rendered by Helm from chart values rather than a static literal.

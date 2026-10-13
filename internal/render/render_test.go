@@ -95,6 +95,47 @@ x-uds:
 	}
 }
 
+func TestWaitImageBuildVersion(t *testing.T) {
+	t.Parallel()
+	for _, tag := range []string{"abc1234", "edge", "1.2.3"} {
+		t.Run(tag, func(t *testing.T) {
+			root := t.TempDir()
+			binary := filepath.Join(root, "compose-bridge")
+			build := exec.Command("go", "build", "-ldflags", "-X defenseunicorns/uds-compose-bridge/internal/render.imageVersion="+tag, "-o", binary, ".")
+			build.Dir = filepath.Join("..", "..")
+			if output, err := build.CombinedOutput(); err != nil {
+				t.Fatalf("build: %v\n%s", err, output)
+			}
+			input := filepath.Join(root, "compose.yaml")
+			if err := os.WriteFile(input, []byte(`name: demo
+services:
+  api:
+    image: acme/api:1
+    depends_on: [db]
+  db:
+    image: postgres:18
+    expose: [5432]
+x-uds:
+  metadata:
+    version: 9.8.7
+`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			outputDir := filepath.Join(root, "package")
+			if output, err := exec.Command(binary, "-in", input, "-out", outputDir).CombinedOutput(); err != nil {
+				t.Fatalf("render: %v\n%s", err, output)
+			}
+			image := "ghcr.io/defenseunicorns/compose-bridge-uds/wait:" + tag
+			for _, path := range []string{"chart/templates/deployment-api.yaml", "zarf.yaml"} {
+				content := readFile(t, filepath.Join(outputDir, path))
+				if strings.Count(content, image) != 1 || strings.Contains(content, testWaitImage) {
+					t.Fatalf("expected one build-version wait image %q in %s\n%s", image, path, content)
+				}
+			}
+		})
+	}
+}
+
 func TestNoDependenciesOmitWaitImage(t *testing.T) {
 	t.Parallel()
 	app, err := compose.LoadCanonicalYAML([]byte("name: demo\nservices:\n  api:\n    image: acme/api:1\n"))

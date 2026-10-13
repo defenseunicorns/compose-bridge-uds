@@ -59,6 +59,8 @@ This checks connectivity only, not Compose `service_healthy` or
 
 Zarf bundles `ghcr.io/defenseunicorns/compose-bridge-uds/wait`, pinned in
 the renderer independently of the application's package version.
+The Docker build arg `VERSION` defaults to the maintained release version;
+Tests use `dev`; published images use `edge` or the release tag.
 Prebuilt applications need no helper build; deployment uses the bundled image.
 The project maintains the non-root `scratch` image and its Go toolchain.
 

@@ -4,6 +4,7 @@ FROM --platform=$BUILDPLATFORM mirror.gcr.io/library/golang:1.27@sha256:0ecdc2a9
 
 ARG TARGETOS
 ARG TARGETARCH
+ARG VERSION
 
 WORKDIR /src
 
@@ -20,7 +21,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     go build \
       -trimpath \
       -buildvcs=false \
-      -ldflags="-s -w -buildid=" \
+      -ldflags="-s -w -buildid= ${VERSION:+-X defenseunicorns/uds-compose-bridge/internal/render.imageVersion=${VERSION}}" \
       -o /transform \
       .
 
