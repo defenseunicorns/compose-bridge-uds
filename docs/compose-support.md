@@ -62,6 +62,8 @@ the renderer independently of the application's package version.
 The Docker build arg `VERSION` defaults to the maintained release version;
 Tests use `dev`; published images use `edge` or the release tag.
 Prebuilt applications need no helper build; deployment uses the bundled image.
+This GHCR image is included in the package even when the application uses the
+`registry1` flavor; that flavor does not change the helper's image reference.
 The project maintains the non-root `scratch` image and its Go toolchain.
 
 ## Runtime secrets
