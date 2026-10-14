@@ -97,11 +97,11 @@ x-uds:
 
 func TestWaitImageBuildVersion(t *testing.T) {
 	t.Parallel()
-	for _, tag := range []string{"abc1234", "edge", "1.2.3"} {
+	for _, tag := range []string{"abc1234", "edge", "1.2.3", "@sha256:" + strings.Repeat("a", 64)} {
 		t.Run(tag, func(t *testing.T) {
 			root := t.TempDir()
 			binary := filepath.Join(root, "compose-bridge")
-			build := exec.Command("go", "build", "-ldflags", "-X defenseunicorns/uds-compose-bridge/internal/render.imageVersion="+tag, "-o", binary, ".")
+			build := exec.Command("go", "build", "-ldflags", "-X defenseunicorns/uds-compose-bridge/internal/render.dependencyWaitImage=ghcr.io/defenseunicorns/compose-bridge-uds/wait:"+tag, "-o", binary, ".")
 			build.Dir = filepath.Join("..", "..")
 			if output, err := build.CombinedOutput(); err != nil {
 				t.Fatalf("build: %v\n%s", err, output)
