@@ -1,6 +1,6 @@
 module defenseunicorns/uds-compose-bridge
 
-go 1.25.8
+go 1.27.2
 
 require (
 	github.com/compose-spec/compose-go/v2 v2.14.0
