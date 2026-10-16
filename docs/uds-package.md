@@ -6,7 +6,7 @@ The generated chart uses Helm's `{{ .Release.Namespace }}` for namespaced resour
 
 Generated packages include consumer documentation under `out/docs/`. The top-level `documentation` map in `out/zarf.yaml` embeds the generated package readme, deploy-time configuration reference, and application dependency reference so they can be inspected from the packaged artifact.
 
-The generated Zarf component uses one inferred package flavor. It is `registry1` when every packaged image originates from `registry1.dso.mil`; otherwise it is `upstream`. Use that flavor when running `zarf package create`; the generated package readme includes the exact command.
+The generated Zarf component uses one inferred package flavor. It is `registry1` when every application image originates from `registry1.dso.mil`; otherwise it is `upstream`. Dependency waits also add the GHCR-hosted helper image to the package, including for `registry1` flavor packages (see [dependency waits](compose-support.md#dependency-waits)). Use the inferred flavor when running `zarf package create`; the generated package readme includes the exact command.
 
 Generated packages default to the standard UDS development version. The Zarf package version and Helm `appVersion` are `dev`, while the Helm chart version is the semantic version `0.0.0-dev`. A supplied `x-uds.metadata.version` value is preserved so release tooling such as `uds-pk` remains the version authority. The bridge emits a warning whenever the package version does not use the conventional `<upstream>-uds.<sub-version>` form, including for the default `dev` value.
 

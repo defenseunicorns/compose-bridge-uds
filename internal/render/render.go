@@ -20,6 +20,8 @@ import (
 
 const zarfSchemaURL = "https://raw.githubusercontent.com/zarf-dev/zarf/main/zarf.schema.json"
 
+var dependencyWaitImage = "ghcr.io/defenseunicorns/compose-bridge-uds/wait:1.3.0" // x-release-please-version
+
 const (
 	// chartDirName is the Helm chart directory written under the package root.
 	chartDirName = "chart"
@@ -32,6 +34,7 @@ const (
 	buildComposeFileName = "build.compose.yaml"
 	imageArchiveDir      = "image-archives"
 	buildxBuilderPrefix  = "compose-bridge-uds"
+
 	// secretValuePlaceholder is the sentinel injected into a marshaled Secret's
 	// stringData and then replaced with a Helm value reference, so the Secret can
 	// be rendered by Helm from chart values rather than a static literal.
@@ -299,6 +302,7 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 		}
 	}
 
+	hasDependencyWaits := false
 	for _, svc := range app.Services {
 		deployment, helmValues, err := buildDeployment(
 			app.Package.Name,
@@ -313,6 +317,9 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 		)
 		if err != nil {
 			return err
+		}
+		if len(deployment.Spec.Template.Spec.InitContainers) > 0 {
+			hasDependencyWaits = true
 		}
 		if err := writeDeploymentTemplate(filepath.Join(templatesDir, fmt.Sprintf("deployment-%s.yaml", svc.Name)), deployment, svc.Name, helmValues); err != nil {
 			return err
@@ -351,7 +358,7 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 		return err
 	}
 
-	if hasBuildServices(app) {
+	if len(buildServices(app)) > 0 {
 		if err := writeBuildCompose(filepath.Join(root, buildComposeFileName), app); err != nil {
 			return err
 		}
@@ -359,12 +366,17 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 
 	images := make([]string, 0, len(app.Services))
 	for _, svc := range app.Services {
-		images = append(images, buildComponentImages(svc, servicePorts)...)
+		if svc.Build == nil {
+			images = append(images, svc.Image)
+		}
+	}
+	flavor := inferPackageFlavor(app, images)
+	if hasDependencyWaits {
+		images = append(images, dependencyWaitImage)
 	}
 	images = dedupeStrings(images)
-	flavor := inferPackageFlavor(app, images)
 
-	if err := writePackageDocumentation(root, app, secretVariables, configVariables, environmentVariables, flavor); err != nil {
+	if err := writePackageDocumentation(root, app, secretVariables, configVariables, environmentVariables, flavor, hasDependencyWaits); err != nil {
 		return err
 	}
 
@@ -375,7 +387,7 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 	return nil
 }
 
-func writePackageDocumentation(root string, app model.App, secretVariables map[string]secretVariableNames, configVariables map[string]configVariableNames, environmentVariables map[string]map[string]string, flavor string) error {
+func writePackageDocumentation(root string, app model.App, secretVariables map[string]secretVariableNames, configVariables map[string]configVariableNames, environmentVariables map[string]map[string]string, flavor string, hasDependencyWaits bool) error {
 	docsDir := filepath.Join(root, "docs")
 	if err := os.MkdirAll(docsDir, 0o755); err != nil {
 		return fmt.Errorf("create documentation directory %s: %w", docsDir, err)
@@ -384,7 +396,7 @@ func writePackageDocumentation(root string, app model.App, secretVariables map[s
 	documents := map[string]string{
 		"README.md":        buildPackageReadme(app, flavor),
 		"configuration.md": buildConfigurationDocumentation(app, secretVariables, configVariables, environmentVariables),
-		"dependencies.md":  buildDependencyDocumentation(app),
+		"dependencies.md":  buildDependencyDocumentation(app, hasDependencyWaits),
 	}
 	for name, content := range documents {
 		path := filepath.Join(docsDir, name)
@@ -481,7 +493,7 @@ func markdownTableValue(value string) string {
 	return value
 }
 
-func buildDependencyDocumentation(app model.App) string {
+func buildDependencyDocumentation(app model.App, hasDependencyWaits bool) string {
 	var content strings.Builder
 	content.WriteString("# Dependencies\n\n")
 	content.WriteString("The generated package contains these application services and container images.\n\n")
@@ -502,26 +514,31 @@ func buildDependencyDocumentation(app model.App) string {
 		}
 		fmt.Fprintf(&content, "| `%s` | `%s` | %s |\n", markdownTableValue(svc.Name), markdownTableValue(svc.Image), markdownTableValue(dependencyText))
 	}
+	if hasDependencyWaits {
+		content.WriteString("\n## Dependency startup waits\n\nEach new Pod waits for its dependencies' first TCP ports; Compose healthy/completed conditions and ongoing health are not checked.\n\nZarf bundles the published TCP wait helper; no helper build is needed. Docker/Buildx is required only for application builds.\n")
+	}
 	return content.String()
 }
 
 // Compose build workspace and Zarf package-creation actions.
 
-func hasBuildServices(app model.App) bool {
+func imageArchivePath(service string) string {
+	return filepath.ToSlash(filepath.Join(imageArchiveDir, service+".tar"))
+}
+
+func buildServices(app model.App) []model.Service {
+	var services []model.Service
 	for _, svc := range app.Services {
 		if svc.Build != nil {
-			return true
+			services = append(services, svc)
 		}
 	}
-	return false
+	return services
 }
 
 func writeBuildCompose(path string, app model.App) error {
 	services := map[string]buildComposeService{}
-	for _, svc := range app.Services {
-		if svc.Build == nil {
-			continue
-		}
+	for _, svc := range buildServices(app) {
 		services[svc.Name] = buildComposeService{
 			Image: svc.Image,
 			Build: svc.Build.Config,
@@ -535,7 +552,8 @@ func writeBuildCompose(path string, app model.App) error {
 }
 
 func buildCreateActions(app model.App) *zarfComponentActions {
-	if !hasBuildServices(app) {
+	services := buildServices(app)
+	if len(services) == 0 {
 		return nil
 	}
 	builderVariables := []string{
@@ -562,10 +580,7 @@ func buildCreateActions(app model.App) *zarfComponentActions {
 		"  --progress plain",
 	}
 	readPaths := map[string]struct{}{}
-	for _, svc := range app.Services {
-		if svc.Build == nil {
-			continue
-		}
+	for _, svc := range services {
 		for _, path := range svc.Build.ReadPaths {
 			readPaths[path] = struct{}{}
 		}
@@ -574,12 +589,9 @@ func buildCreateActions(app model.App) *zarfComponentActions {
 		arguments = append(arguments, "  --allow "+shellQuote("fs.read="+path))
 	}
 	targets := []string{}
-	for _, svc := range app.Services {
-		if svc.Build == nil {
-			continue
-		}
+	for _, svc := range services {
 		target := svc.Name
-		archive := filepath.ToSlash(filepath.Join(imageArchiveDir, svc.Name+".tar"))
+		archive := imageArchivePath(svc.Name)
 		archives = append(archives, shellQuote(archive))
 		if !buildDeclaresPlatforms(svc.Build.Config) {
 			arguments = append(arguments,
@@ -1131,12 +1143,9 @@ func writeZarfConfig(
 		Images:      dedupeStrings(images),
 		Actions:     buildCreateActions(app),
 	}
-	for _, svc := range app.Services {
-		if svc.Build == nil {
-			continue
-		}
+	for _, svc := range buildServices(app) {
 		component.ImageArchives = append(component.ImageArchives, zarfImageArchive{
-			Path:   filepath.ToSlash(filepath.Join(imageArchiveDir, svc.Name+".tar")),
+			Path:   imageArchivePath(svc.Name),
 			Images: []string{svc.Image},
 		})
 	}
@@ -1211,6 +1220,7 @@ func buildDeployment(
 	namespace string,
 	svc model.Service,
 	servicePorts map[string]int,
+
 	preserveNetworkMembership bool,
 	secrets map[string]model.Secret,
 	secretVariables map[string]secretVariableNames,
@@ -1810,18 +1820,6 @@ func primaryPublishedPort(ports []model.Port) (model.Port, bool) {
 	return primaryGatewayPort(ports, true)
 }
 
-func primaryDependencyWaitPort(ports []model.Port) (int, bool) {
-	for _, port := range ports {
-		if port.Number <= 0 {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(port.Protocol), "TCP") {
-			return port.Number, true
-		}
-	}
-	return 0, false
-}
-
 func primaryGatewayPort(ports []model.Port, requirePublished bool) (model.Port, bool) {
 	for _, port := range ports {
 		if gatewayPortCandidate(port, requirePublished) && port.HasWebHint() {
@@ -1994,6 +1992,15 @@ func addExternalResourceHelmValue(
 	return placeholder
 }
 
+func primaryDependencyWaitPort(ports []model.Port) (int, bool) {
+	for _, port := range ports {
+		if port.Number > 0 && strings.EqualFold(strings.TrimSpace(port.Protocol), "TCP") {
+			return port.Number, true
+		}
+	}
+	return 0, false
+}
+
 func buildDependencyInitContainers(svc model.Service, servicePorts map[string]int) []containerSpec {
 	if len(svc.DependsOn) == 0 {
 		return nil
@@ -2004,26 +2011,21 @@ func buildDependencyInitContainers(svc model.Service, servicePorts map[string]in
 		if !ok || port <= 0 {
 			continue
 		}
-		waitScript := fmt.Sprintf("until nc -z %s %d; do echo waiting for %s:%d; sleep 2; done", dep.Service, port, dep.Service, port)
+		nonRoot, readOnly, escalation := true, true, false
+		user := int64(65532)
 		containers = append(containers, containerSpec{
 			Name:            sanitizeManifestName("wait-" + dep.Service),
-			Image:           model.DependencyInitImage,
+			Image:           dependencyWaitImage,
 			ImagePullPolicy: "IfNotPresent",
-			Command:         []string{"sh", "-c", waitScript},
+			Args:            []string{fmt.Sprintf("%s:%d", dep.Service, port)},
+			SecurityContext: &securityContext{
+				RunAsNonRoot: &nonRoot, RunAsUser: &user,
+				ReadOnlyRootFilesystem: &readOnly, AllowPrivilegeEscalation: &escalation,
+				Capabilities: &capabilitiesSpec{Drop: []string{"ALL"}},
+			},
 		})
 	}
 	return containers
-}
-
-func buildComponentImages(svc model.Service, servicePorts map[string]int) []string {
-	images := []string{}
-	if svc.Build == nil {
-		images = append(images, svc.Image)
-	}
-	if len(buildDependencyInitContainers(svc, servicePorts)) > 0 {
-		images = append(images, model.DependencyInitImage)
-	}
-	return dedupeStrings(images)
 }
 
 func buildEnvFrom(svc model.Service) []envFromSource {
@@ -2813,10 +2815,12 @@ type resourceRequirements struct {
 }
 
 type securityContext struct {
-	RunAsNonRoot *bool             `yaml:"runAsNonRoot,omitempty"`
-	RunAsUser    *int64            `yaml:"runAsUser,omitempty"`
-	Privileged   *bool             `yaml:"privileged,omitempty"`
-	Capabilities *capabilitiesSpec `yaml:"capabilities,omitempty"`
+	ReadOnlyRootFilesystem   *bool             `yaml:"readOnlyRootFilesystem,omitempty"`
+	AllowPrivilegeEscalation *bool             `yaml:"allowPrivilegeEscalation,omitempty"`
+	RunAsNonRoot             *bool             `yaml:"runAsNonRoot,omitempty"`
+	RunAsUser                *int64            `yaml:"runAsUser,omitempty"`
+	Privileged               *bool             `yaml:"privileged,omitempty"`
+	Capabilities             *capabilitiesSpec `yaml:"capabilities,omitempty"`
 }
 
 type capabilitiesSpec struct {

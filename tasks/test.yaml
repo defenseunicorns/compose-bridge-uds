@@ -6,13 +6,24 @@ tasks:
   - name: generate
     description: Generate the simple example package
     actions:
+      - description: Build helper images
+        cmd: |
+          for context in internal/images/*; do
+            docker buildx build --load \
+              --tag "ghcr.io/defenseunicorns/compose-bridge-uds/${context##*/}:dev" \
+              "${context}"
+          done
+
       - description: Build the Compose Bridge transformation
-        cmd: docker build --tag compose-bridge-uds:smoke-test .
+        cmd: >-
+          docker build
+          --build-arg WAIT_IMAGE=ghcr.io/defenseunicorns/compose-bridge-uds/wait:dev
+          --tag compose-bridge-uds:dev .
 
       - description: Convert the simple Compose application
         cmd: |
           docker compose bridge convert \
-            --transformation compose-bridge-uds:smoke-test \
+            --transformation compose-bridge-uds:dev \
             --output out
         dir: examples/simple
 
