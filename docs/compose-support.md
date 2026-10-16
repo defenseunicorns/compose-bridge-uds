@@ -57,10 +57,12 @@ Each new Pod waits sequentially for its dependencies' first declared TCP ports.
 This checks connectivity only, not Compose `service_healthy` or
 `service_completed_successfully` conditions or ongoing health.
 
-Zarf bundles `ghcr.io/defenseunicorns/compose-bridge-uds/wait`, pinned in
-the renderer independently of the application's package version.
-The Docker build arg `VERSION` defaults to the maintained release version;
-Tests use `dev`; published images use `edge` or the release tag.
+Zarf bundles `ghcr.io/defenseunicorns/compose-bridge-uds/wait`.
+The renderer defaults to the maintained release tag; the optional Docker build
+arg `WAIT_IMAGE` overrides it with a full image reference.
+Tests use `ghcr.io/defenseunicorns/compose-bridge-uds/wait:dev`.
+CI publishes the helper under `edge` or the release tag, then embeds its immutable
+digest reference in the transformer.
 Prebuilt applications need no helper build; deployment uses the bundled image.
 This GHCR image is included in the package even when the application uses the
 `registry1` flavor; that flavor does not change the helper's image reference.
