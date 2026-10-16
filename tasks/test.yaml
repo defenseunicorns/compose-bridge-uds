@@ -15,7 +15,10 @@ tasks:
           done
 
       - description: Build the Compose Bridge transformation
-        cmd: docker build --build-arg VERSION=dev --tag compose-bridge-uds:dev .
+        cmd: >-
+          docker build
+          --build-arg WAIT_IMAGE=ghcr.io/defenseunicorns/compose-bridge-uds/wait:dev
+          --tag compose-bridge-uds:dev .
 
       - description: Convert the simple Compose application
         cmd: |
