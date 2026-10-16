@@ -211,11 +211,6 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 		return err
 	}
 
-	var waitImage string
-	if hasDependencyWaits(app) {
-		waitImage = dependencyWaitImage
-	}
-
 	secretVariables := buildSecretVariables(app.Secrets)
 	configVariables := buildConfigVariables(app.Configs)
 	environmentVariables, err := buildEnvironmentVariables(app, secretVariables, configVariables)
@@ -307,6 +302,7 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 		}
 	}
 
+	hasDependencyWaits := false
 	for _, svc := range app.Services {
 		deployment, helmValues, err := buildDeployment(
 			app.Package.Name,
@@ -321,6 +317,9 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 		)
 		if err != nil {
 			return err
+		}
+		if len(deployment.Spec.Template.Spec.InitContainers) > 0 {
+			hasDependencyWaits = true
 		}
 		if err := writeDeploymentTemplate(filepath.Join(templatesDir, fmt.Sprintf("deployment-%s.yaml", svc.Name)), deployment, svc.Name, helmValues); err != nil {
 			return err
@@ -367,15 +366,17 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 
 	images := make([]string, 0, len(app.Services))
 	for _, svc := range app.Services {
-		images = append(images, buildComponentImages(svc)...)
+		if svc.Build == nil {
+			images = append(images, svc.Image)
+		}
 	}
 	flavor := inferPackageFlavor(app, images)
-	if waitImage != "" {
-		images = append(images, waitImage)
+	if hasDependencyWaits {
+		images = append(images, dependencyWaitImage)
 	}
 	images = dedupeStrings(images)
 
-	if err := writePackageDocumentation(root, app, secretVariables, configVariables, environmentVariables, flavor); err != nil {
+	if err := writePackageDocumentation(root, app, secretVariables, configVariables, environmentVariables, flavor, hasDependencyWaits); err != nil {
 		return err
 	}
 
@@ -386,7 +387,7 @@ func writePackage(root string, app model.App, includeConversionReport bool) erro
 	return nil
 }
 
-func writePackageDocumentation(root string, app model.App, secretVariables map[string]secretVariableNames, configVariables map[string]configVariableNames, environmentVariables map[string]map[string]string, flavor string) error {
+func writePackageDocumentation(root string, app model.App, secretVariables map[string]secretVariableNames, configVariables map[string]configVariableNames, environmentVariables map[string]map[string]string, flavor string, hasDependencyWaits bool) error {
 	docsDir := filepath.Join(root, "docs")
 	if err := os.MkdirAll(docsDir, 0o755); err != nil {
 		return fmt.Errorf("create documentation directory %s: %w", docsDir, err)
@@ -395,7 +396,7 @@ func writePackageDocumentation(root string, app model.App, secretVariables map[s
 	documents := map[string]string{
 		"README.md":        buildPackageReadme(app, flavor),
 		"configuration.md": buildConfigurationDocumentation(app, secretVariables, configVariables, environmentVariables),
-		"dependencies.md":  buildDependencyDocumentation(app),
+		"dependencies.md":  buildDependencyDocumentation(app, hasDependencyWaits),
 	}
 	for name, content := range documents {
 		path := filepath.Join(docsDir, name)
@@ -492,7 +493,7 @@ func markdownTableValue(value string) string {
 	return value
 }
 
-func buildDependencyDocumentation(app model.App) string {
+func buildDependencyDocumentation(app model.App, hasDependencyWaits bool) string {
 	var content strings.Builder
 	content.WriteString("# Dependencies\n\n")
 	content.WriteString("The generated package contains these application services and container images.\n\n")
@@ -513,7 +514,7 @@ func buildDependencyDocumentation(app model.App) string {
 		}
 		fmt.Fprintf(&content, "| `%s` | `%s` | %s |\n", markdownTableValue(svc.Name), markdownTableValue(svc.Image), markdownTableValue(dependencyText))
 	}
-	if hasDependencyWaits(app) {
+	if hasDependencyWaits {
 		content.WriteString("\n## Dependency startup waits\n\nEach new Pod waits for its dependencies' first TCP ports; Compose healthy/completed conditions and ongoing health are not checked.\n\nZarf bundles the published TCP wait helper; no helper build is needed. Docker/Buildx is required only for application builds.\n")
 	}
 	return content.String()
@@ -2000,23 +2001,6 @@ func primaryDependencyWaitPort(ports []model.Port) (int, bool) {
 	return 0, false
 }
 
-func hasDependencyWaits(app model.App) bool {
-	ports := map[string]int{}
-	for _, svc := range app.Services {
-		if port, ok := primaryDependencyWaitPort(svc.Ports); ok {
-			ports[svc.Name] = port
-		}
-	}
-	for _, svc := range app.Services {
-		for _, dep := range svc.DependsOn {
-			if ports[dep.Service] > 0 {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func buildDependencyInitContainers(svc model.Service, servicePorts map[string]int) []containerSpec {
 	if len(svc.DependsOn) == 0 {
 		return nil
@@ -2042,15 +2026,6 @@ func buildDependencyInitContainers(svc model.Service, servicePorts map[string]in
 		})
 	}
 	return containers
-}
-
-func buildComponentImages(svc model.Service) []string {
-	images := []string{}
-	if svc.Build == nil {
-		images = append(images, svc.Image)
-	}
-
-	return dedupeStrings(images)
 }
 
 func buildEnvFrom(svc model.Service) []envFromSource {

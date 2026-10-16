@@ -10,12 +10,6 @@
   "prConcurrentLimit": 10,
   "packageRules": [
     {
-      "description": "Bump the Go module version to each new Go release",
-      "matchDatasources": ["golang-version"],
-      "rangeStrategy": "bump",
-      "groupName": "Go toolchain"
-    },
-    {
       "description": "Group Go builder image updates with Go module updates",
       "matchManagers": ["dockerfile"],
       "matchFileNames": ["Dockerfile", "internal/images/wait/Dockerfile"],
@@ -32,6 +26,12 @@
       "matchManagers": ["gomod"],
       "matchUpdateTypes": ["minor", "patch"],
       "groupName": "Go dependencies"
+    },
+    {
+      "description": "Bump the Go module version to each new Go release",
+      "matchDatasources": ["golang-version"],
+      "rangeStrategy": "bump",
+      "groupName": "Go toolchain"
     }
   ],
   "customManagers": [

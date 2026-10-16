@@ -41,15 +41,11 @@ jobs:
           echo "revision=${revision}" >> "${GITHUB_OUTPUT}"
           echo "tag=${tag:-edge}" >> "${GITHUB_OUTPUT}"
 
-  push-helper-images:
+  push-wait-image:
     needs: image-version
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - image: wait
-            context: internal/images/wait
-            repository: ghcr.io/defenseunicorns/compose-bridge-uds/wait
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     permissions:
       contents: read
       packages: write
@@ -69,32 +65,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push ${{ matrix.image }} image
+      - name: Build and push wait image
         id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
-          context: ${{ matrix.context }}
+          context: internal/images/wait
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ matrix.repository }}:${{ needs.image-version.outputs.tag }}
+          tags: ghcr.io/defenseunicorns/compose-bridge-uds/wait:${{ needs.image-version.outputs.tag }}
           labels: |
             org.opencontainers.image.source=https://github.com/defenseunicorns/compose-bridge-uds
             org.opencontainers.image.revision=${{ needs.image-version.outputs.revision }}
 
-      - name: Save ${{ matrix.image }} image digest
-        env:
-          DIGEST: ${{ steps.build.outputs.digest }}
-        run: printf '%s\n' "${DIGEST}" > "${RUNNER_TEMP}/digest"
-
-      - name: Upload ${{ matrix.image }} image digest
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ matrix.image }}-digest
-          path: ${{ runner.temp }}/digest
-          if-no-files-found: error
-
   push-transformer-image:
-    needs: [image-version, push-helper-images]
+    needs: [image-version, push-wait-image]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -115,32 +99,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download wait image digest
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+      - name: Extract Docker image tags
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          name: wait-digest
-          path: ${{ runner.temp }}/wait-digest
-
-      - name: Resolve immutable wait image reference
-        id: wait-image
-        env:
-          DIGEST_FILE: ${{ runner.temp }}/wait-digest/digest
-        run: |
-          digest=$(cat "${DIGEST_FILE}")
-          if [[ ! "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
-            echo "Invalid wait image digest: ${digest}" >&2
-            exit 1
-          fi
-          echo "reference=ghcr.io/defenseunicorns/compose-bridge-uds/wait@${digest}" >> "${GITHUB_OUTPUT}"
+          images: ghcr.io/defenseunicorns/compose-bridge-uds
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.image-version.outputs.tag }},enable=${{ needs.image-version.outputs.tag != 'edge' }}
+            type=raw,value=edge,enable=${{ needs.image-version.outputs.tag == 'edge' }}
 
       - name: Build and push transformer image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          build-args: WAIT_IMAGE=${{ steps.wait-image.outputs.reference }}
+          build-args: WAIT_IMAGE=ghcr.io/defenseunicorns/compose-bridge-uds/wait@${{ needs.push-wait-image.outputs.digest }}
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/defenseunicorns/compose-bridge-uds:${{ needs.image-version.outputs.tag }}
+          tags: ${{ steps.meta.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/defenseunicorns/compose-bridge-uds
             org.opencontainers.image.revision=${{ needs.image-version.outputs.revision }}
