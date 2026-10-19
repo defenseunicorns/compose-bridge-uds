@@ -21,7 +21,7 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
-const testWaitImage = "ghcr.io/defenseunicorns/compose-bridge-uds/wait:1.3.0" // x-release-please-version
+const testWaitImage = "ghcr.io/defenseunicorns/compose-bridge-uds/wait:1.3.1" // x-release-please-version
 
 func TestWaitPackaging(t *testing.T) {
 	t.Parallel()

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/defenseunicorns/compose-bridge-uds/compare/v1.3.0...v1.3.1) (2026-10-19)
+
+
+### Bug Fixes
+
+* replace BusyBox dependency waits with a generated Go helper ([#145](https://github.com/defenseunicorns/compose-bridge-uds/issues/145)) ([e61f108](https://github.com/defenseunicorns/compose-bridge-uds/commit/e61f108144166e71f9c374ba249e8f574daad320))
+
 ## [1.3.0](https://github.com/defenseunicorns/compose-bridge-uds/compare/v1.2.0...v1.3.0) (2026-09-24)
 
 
