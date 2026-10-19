@@ -7,6 +7,7 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -30,6 +31,9 @@ jobs:
 
       - name: Run go vet
         run: go vet ./...
+
+      - name: Run tests
+        run: go test -race ./...
 
   vulnerability-scan:
     runs-on: ubuntu-latest

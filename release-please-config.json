@@ -3,7 +3,11 @@
   "packages": {
     ".": {
       "release-type": "go",
-      "include-component-in-tag": false
+      "include-component-in-tag": false,
+      "extra-files": [
+        "internal/render/render.go",
+        "internal/render/render_test.go"
+      ]
     }
   }
 }
