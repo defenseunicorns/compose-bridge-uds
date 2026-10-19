@@ -20,7 +20,7 @@ import (
 
 const zarfSchemaURL = "https://raw.githubusercontent.com/zarf-dev/zarf/main/zarf.schema.json"
 
-var dependencyWaitImage = "ghcr.io/defenseunicorns/compose-bridge-uds/wait:1.3.0" // x-release-please-version
+var dependencyWaitImage = "ghcr.io/defenseunicorns/compose-bridge-uds/wait:1.3.1" // x-release-please-version
 
 const (
 	// chartDirName is the Helm chart directory written under the package root.
